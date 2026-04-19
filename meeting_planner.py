@@ -43,8 +43,9 @@ class MeetingPlanner:
     def __init__(self):
         self.c = canvas.Canvas(OUTPUT_FILE, pagesize=(PAGE_W, PAGE_H))
         self.c.setTitle("Meeting Planner")
-        self.w = PAGE_W - 2 * MARGIN
-        self.L = MARGIN
+        left_margin = MARGIN + 0.25 * inch  # extra offset for Supernote left toolbar
+        self.w = PAGE_W - left_margin - MARGIN
+        self.L = left_margin
         self.R = PAGE_W - MARGIN
 
     def _text(self, x, y, text, font=FONT, size=9, color=CLR_BLACK):
@@ -86,7 +87,7 @@ class MeetingPlanner:
             self.c.line(x + s * 0.2, ly, x + s * 0.8, ly)
 
     def build(self):
-        y = PAGE_H - MARGIN
+        y = PAGE_H - MARGIN - 0.35 * inch  # extra offset for Supernote toolbar
         rh = ROW_HEIGHT
 
         # ──────────────────────────────────────────────────────────
@@ -228,10 +229,10 @@ class MeetingPlanner:
         # Actions table needs: 2 (gap) + 18 (header) + ACTION_ROWS * ROW_HEIGHT + margin
         actions_height = 2 + 18 + ACTION_ROWS * rh
         notes_bottom = MARGIN + actions_height + 4
-        y -= 14
+        y -= rh
         while y > notes_bottom:
             self._line(self.L, y, self.R, y, CLR_GRAY_LIGHT, 0.4)
-            y -= 14
+            y -= rh
 
         # ──────────────────────────────────────────────────────────
         #  ACTIONS TABLE: ACTIONS | WHO | DUE | ✓
