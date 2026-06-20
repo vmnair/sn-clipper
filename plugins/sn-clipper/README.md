@@ -76,7 +76,7 @@ While inside a document (PDF, ePub) open the plugin menu and access Clipper App.
 [ ] Merge clips
 
 [ ] I have not tested this in a Nomad as I do not own one. If anyone can test on
-a Supernote Nomad device & provideme feedback, I would appreciate it.
+a Supernote Nomad & provide feedback, I would appreciate it.
 
 ---
 
