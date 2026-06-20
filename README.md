@@ -73,9 +73,11 @@ While inside a document (PDF, ePub) open the plugin menu and access Clipper App.
 
 ## Todo:
 
-[ ] Merge clips
+1. Merge clips ( Multi-select & merge )
 
-[ ] I have not tested this in a Nomad as I do not own one. If anyone can test on
+2. Highlight selections in document (currently selected text is not highlighted)
+
+3.  I have not tested this in a Nomad as I do not own one. If anyone can test on
 a Supernote Nomad & provide feedback, I would appreciate it.
 
 ---
