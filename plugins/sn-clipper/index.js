@@ -21,7 +21,7 @@ AppRegistry.registerComponent(appName, () => App);
 PluginManager.registerButton(3, ['DOC'], {
   id: 300,
   name: 'Clip Text',
-  icon: Image.resolveAssetSource(require('./assets/icon.png')).uri,
+  icon: Image.resolveAssetSource(require('./assets/icon/icon.png')).uri,
   showType: 0, // Executes background handler, no UI popup
 });
 
@@ -29,7 +29,7 @@ PluginManager.registerButton(3, ['DOC'], {
 PluginManager.registerButton(1, ['NOTE', 'DOC'], {
   id: 100,
   name: 'Clipper',
-  icon: Image.resolveAssetSource(require('./assets/icon.png')).uri,
+  icon: Image.resolveAssetSource(require('./assets/icon/icon.png')).uri,
   showType: 1, // Launches full-screen UI (App.tsx)
 });
 

@@ -170,7 +170,7 @@ export class ClipService {
       await PluginManager.registerButton(1, ['NOTE', 'DOC'], {
         id: 100,
         name: name,
-        icon: Image.resolveAssetSource(require('../../assets/icon.png')).uri,
+        icon: Image.resolveAssetSource(require('../../assets/icon/icon.png')).uri,
         showType: 1, // Launches full-screen UI (App.tsx)
       });
     } catch (err) {
