@@ -664,6 +664,44 @@ rename_to_snplg_file() {
 }
 
 # =========================================================
+# Function: increment_version_code
+# Purpose: Auto-increment versionCode in PluginConfig.json
+# Params: $1 project root
+# Returns: none
+# =========================================================
+increment_version_code() {
+    local project_root="$1"
+    local root_cfg="$project_root/PluginConfig.json"
+    [[ ! -f "$root_cfg" ]] && return
+
+    write_color_output "Auto-incrementing versionCode in PluginConfig.json..." "Blue"
+    if command -v jq >/dev/null 2>&1; then
+        local vc
+        vc="$(jq -r '.versionCode // "0"' "$root_cfg")"
+        local new_vc=$((vc + 1))
+        jq --arg vc "$new_vc" '.versionCode = $vc' "$root_cfg" > "${root_cfg}.tmp" && mv "${root_cfg}.tmp" "$root_cfg"
+        write_color_output "Updated versionCode to: $new_vc" "Green"
+    elif command -v python3 >/dev/null 2>&1; then
+        local new_vc
+        new_vc="$(python3 -c "
+import json
+path = '$root_cfg'
+with open(path, 'r', encoding='utf-8-sig') as f:
+    cfg = json.load(f)
+vc = int(cfg.get('versionCode', '0'))
+new_vc = vc + 1
+cfg['versionCode'] = str(new_vc)
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+print(new_vc)
+")"
+        write_color_output "Updated versionCode to: $new_vc" "Green"
+    else
+        write_color_output "Could not increment versionCode: jq or python3 is required" "Yellow"
+    fi
+}
+
+# =========================================================
 # Function: main
 # Purpose: Orchestrate all steps to build plugin package
 # Params: $1 project root (optional, defaults to current directory)
@@ -673,6 +711,7 @@ main() {
     test_operating_system
 
     local project_root="${1:-$(pwd)}"
+    increment_version_code "$project_root"
     get_package_info "$project_root"
 
     local gen_dir
