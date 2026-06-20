@@ -5,14 +5,16 @@ highlight, and aggregate text snippets from e-books (EPUBs),
 documents (PDFs, TXT), and notes, compiles them into a unified dashboard,
 and lets you insert the aggregated text back into note pages.
 
-I developed this plugin to address a specific use case to enable adding a series
-of selected texts to digest while reading an article or document. Currently, it
-would require us to switch frequently from article being read to digest which
-results in loss of focus.
+This plugin is developed to address a specific use case to enable adding a series
+of selected texts to `digest app` while reading an article or document. I
+developement this plugin to solve a workflow problem for me that was preventing
+use of one of the powerful feature Supernote offers: `digests`
 
-I have used agentic coding during this developemt (local LLM, Gemini).
+Currently, it would require us to switch frequently from article being read to
+`digest app` which was resulting in loss of focus.
 
-Please feel free to use / modify as you see fit.
+I have made heavy use of agentic coding (Gemini, Llama3.3) during the
+development of this plugin.
 
 Use this plugin at your own risk. I do not make any warrenty.
 
@@ -72,6 +74,7 @@ While inside a document (PDF, ePub) open the plugin menu and access Clipper App.
 ## Todo:
 
 [ ] Merge clips
+
 [ ] I have not tested this in a Nomad as I do not own one. If anyone can test on
 a Supernote Nomad device & provideme feedback, I would appreciate it.
 
