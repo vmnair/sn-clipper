@@ -1,97 +1,82 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Clipper
 
-# Getting Started
+Clipper is a utility plugin for Supernote devices that allows you to select,
+highlight, and aggregate text snippets from e-books (EPUBs),
+documents (PDFs, TXT), and notes, compiles them into a unified dashboard,
+and lets you insert the aggregated text back into note pages.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+I developed this plugin to address a specific use case to enable adding a series
+of selected texts to digest while reading an article or document. Currently, it
+would require us to switch frequently from article being read to digest which
+results in loss of focus.
 
-## Step 1: Start Metro
+I have used agentic coding during this developemt (local LLM, Gemini).
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+Please feel free to use / modify as you see fit.
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+Use this plugin at your own risk. I do not make any warrenty.
 
-```sh
-# Using npm
-npm start
+---
 
-# OR using Yarn
-yarn start
-```
+## Key Features
 
-## Step 2: Build and run your app
+- **Highlight to Clip**: A text-selection toolbar button ("Clip Text") captures
+  selected text and labels it with the source file name. Currently, the text clipped
+  does not show highlight, I am exploring how to achieve this.
+- **Clipper App**: Accessible directly from the Supernote plugins sidebar menu
+  ("Clipper"), displaying a list of all your clippings.
+- **Dynamic Badge Count**: The sidebar menu button dynamically updates its
+  label to show the count of current clips (e.g., `Clipper (5)`).
+- **Search & Filters**: Quickly search clippings or filter by specific source
+  documents.
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+---
 
-### Android
+## Installation & Sideloading
 
-```sh
-# Using npm
-npm run android
+To load the pre-compiled plugin onto your Supernote device:
 
-# OR using Yarn
-yarn android
-```
+1.  Download the latest `SnClipper.snplg` file from the [Releases](https://github.com/vmnair/Supernote/releases) page.
+2.  Connect your Supernote device to your computer via USB.
+3.  Copy the `SnClipper.snplg` file into the `/Supernote/MyStyle`
+4.  Install plugin.
+5.  Plugin will show as `Clipper` on the device.
 
-### iOS
+---
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
+## How to Use
 
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+### 1. Clipping Text
 
-```sh
-bundle install
-```
+Open any EPUB, PDF, or text document, select/highlight a block of text, and
+click the **Clip Text** option in the text toolbar. A notification will appear,
+and the text will be added to your clipboard manager.
 
-Then, and every time you update your native dependencies, run:
+### 2. Accessing the Clipper App
 
-```sh
-bundle exec pod install
-```
+While inside a document (PDF, ePub) open the plugin menu and access Clipper App.
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+### 3. Managing Clippings
 
-```sh
-# Using npm
-npm run ios
+- **Copy Aggregated**: Copies all clips combined sequentially to your system clipboard.
+- **Insert into Note**: Pastes the combined clippings into your active Note
+  page (only active when editing a note).
+- **Search**: Tap the search bar to filter clips by keywords.
+- **Filter by Source**: Click the source chips to filter clippings from a
+  specific document.
+- **Delete/Clear**: Delete individual clips by clicking the cross icon or
+  clear all clippings with the "Clear All" button.
 
-# OR using Yarn
-yarn ios
-```
+---
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+## Todo:
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+[ ] Merge clips
+[ ] I have not tested this in a Nomad as I do not own one. If anyone can test on
+a Supernote Nomad device & provideme feedback, I would appreciate it.
 
-## Step 3: Modify your app
+---
 
-Now that you have successfully run the app, let's make changes!
+## License
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
