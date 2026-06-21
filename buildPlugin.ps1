@@ -1152,6 +1152,13 @@ function Main {
     $projectRoot = Get-Location
     Write-ColorOutput "Project root directory: $projectRoot" 'Green'
     
+    # Clear previous build files to prevent stale packages
+    Write-ColorOutput 'Clearing previous build directories...' 'Blue'
+    $buildPath = Join-Path $projectRoot 'build'
+    if (Test-Path $buildPath) {
+        Remove-Item -Recurse -Force $buildPath
+    }
+    
     # Step 1: Check if build/generated directory exists, create if not
     Write-ColorOutput '=== Step 1: Check build/generated directory ===' 'Blue'
     $packageInfo = Get-PackageInfo -ProjectRoot $projectRoot
