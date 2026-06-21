@@ -718,6 +718,11 @@ main() {
     fi
 
     local project_root="${1:-$(pwd)}"
+
+    # Clear previous build files to prevent stale packages
+    write_color_output "Clearing previous build directories..." "Blue"
+    rm -rf "$project_root/build"
+
     increment_version_code "$project_root"
     get_package_info "$project_root"
 

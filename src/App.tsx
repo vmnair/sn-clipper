@@ -243,8 +243,8 @@ export default function App() {
               <Pressable onPress={handleClose} style={styles.iconButton} testID="header-close-btn">
                 <Image source={require('../assets/icon/clear.png')} style={styles.iconImage} />
               </Pressable>
-              <Text style={styles.title}>Clipper</Text>
             </View>
+            <Text style={styles.title}>Clipper</Text>
             <View style={styles.headerIcons}>
               <Pressable onPress={toggleSearch} style={styles.iconButton}>
                 <Image source={require('../assets/icon/search.png')} style={styles.iconImage} />
@@ -488,18 +488,24 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    position: 'absolute',
+    left: 0,
+    zIndex: 10,
   },
   headerTitleRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     alignItems: 'center',
+    width: '100%',
+    position: 'relative',
+    minHeight: 64,
   },
   headerIcons: {
+    position: 'absolute',
+    right: 0,
     flexDirection: 'row',
     gap: 16,
+    zIndex: 10,
   },
   iconButton: {
     justifyContent: 'center',
@@ -516,24 +522,31 @@ const styles = StyleSheet.create({
     fontSize: 26,
     fontWeight: 'bold',
     color: '#000000',
+    textAlign: 'center',
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    zIndex: 1,
   },
   subtitle: {
     fontSize: 18,
     color: '#666666',
+    textAlign: 'center',
+    width: '100%',
   },
   headerSubtitleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: 'column',
+    justifyContent: 'center',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
     marginTop: 4,
+    width: '100%',
   },
   headerChips: {
     flexDirection: 'row',
     gap: 6,
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
     flexWrap: 'wrap',
   },
   headerChip: {
