@@ -151,6 +151,17 @@ describe('App Component', () => {
     expect(PluginManager.closePluginView).toHaveBeenCalled();
   });
 
+  it('closes plugin view on Header Close (X) button click', async () => {
+    const root = await renderApp();
+
+    const headerCloseBtn = root.root.findByProps({ testID: 'header-close-btn' });
+    await act(async () => {
+      headerCloseBtn.props.onPress();
+    });
+
+    expect(PluginManager.closePluginView).toHaveBeenCalled();
+  });
+
   it('inserts aggregate text into note', async () => {
     await ClipService.addClip('Snippet A', 'Doc A');
     await ClipService.setActiveFileType(true); // Simulate note context
