@@ -239,7 +239,12 @@ export default function App() {
         {/* Header Section */}
         <View style={styles.header}>
           <View style={styles.headerTitleRow}>
-            <Text style={styles.title}>Clipper</Text>
+            <View style={styles.headerLeft}>
+              <Pressable onPress={handleClose} style={styles.iconButton} testID="header-close-btn">
+                <Image source={require('../assets/icon/clear.png')} style={styles.iconImage} />
+              </Pressable>
+              <Text style={styles.title}>Clipper</Text>
+            </View>
             <View style={styles.headerIcons}>
               <Pressable onPress={toggleSearch} style={styles.iconButton}>
                 <Image source={require('../assets/icon/search.png')} style={styles.iconImage} />
@@ -481,6 +486,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderBottomColor: '#000000',
     paddingBottom: 8,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   headerTitleRow: {
     flexDirection: 'row',

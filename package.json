@@ -1,6 +1,6 @@
 {
   "name": "SnClipper",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "license": "MIT",
   "description": "Collect, aggregate and manage text highlights from e-books and PDFs. Paste compiled text into your notes and digests.",
