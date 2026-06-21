@@ -57,9 +57,10 @@ export default function App() {
       setIsNoteFile(ClipService.getActiveFileTypeSync());
     });
 
-    // Reactively refresh UI when background actions add elements
+    // Reactively refresh UI when background actions add elements or change active file context
     const unsubscribe = ClipService.subscribe(() => {
       setClips([...ClipService.getClipsSync()]);
+      setIsNoteFile(ClipService.getActiveFileTypeSync());
     });
 
     return unsubscribe;
@@ -351,12 +352,11 @@ export default function App() {
                 <HighContrastButton label="Copy Visible" onPress={handleCopyAllVisible} disabled={processedClips.length === 0} />
                 <HighContrastButton label="Clear All" onPress={handleClearAll} disabled={clips.length === 0} />
               </View>
-              <View style={styles.btnRow}>
-                {isNoteFile && (
+              {isNoteFile && (
+                <View style={styles.btnRow}>
                   <HighContrastButton label="Insert Visible" onPress={() => handleInsertClips(processedClips)} disabled={processedClips.length === 0} />
-                )}
-                <HighContrastButton label="Close" onPress={handleClose} />
-              </View>
+                </View>
+              )}
             </>
           ) : (
             <>

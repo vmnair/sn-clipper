@@ -140,17 +140,6 @@ describe('App Component', () => {
     expect(ToastAndroid.show).toHaveBeenCalledWith('Clipboard cleared!', ToastAndroid.SHORT);
   });
 
-  it('closes plugin view on Close button click', async () => {
-    const root = await renderApp();
-
-    const closeBtn = root.root.findByProps({ label: 'Close' });
-    await act(async () => {
-      closeBtn.props.onPress();
-    });
-
-    expect(PluginManager.closePluginView).toHaveBeenCalled();
-  });
-
   it('closes plugin view on Header Close (X) button click', async () => {
     const root = await renderApp();
 

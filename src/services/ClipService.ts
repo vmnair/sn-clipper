@@ -76,8 +76,11 @@ export class ClipService {
    */
   static async setActiveFileType(isNote: boolean): Promise<void> {
     await this.init();
-    this.isNoteFile = isNote;
-    await StorageService.saveIsNoteFile(isNote);
+    if (this.isNoteFile !== isNote) {
+      this.isNoteFile = isNote;
+      await StorageService.saveIsNoteFile(isNote);
+      this.notifyListeners();
+    }
   }
 
   /**
