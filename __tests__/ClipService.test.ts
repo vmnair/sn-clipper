@@ -123,4 +123,41 @@ describe('ClipService', () => {
     await ClipService.setActiveFileType(false);
     expect(ClipService.getActiveFileTypeSync()).toBe(false);
   });
+
+  describe('mergeClips', () => {
+    it('should throw an error if less than 2 IDs are provided', async () => {
+      await expect(ClipService.mergeClips(['1'])).rejects.toThrow('Need at least 2 clips to merge.');
+    });
+
+    it('should throw an error if no matching clips are found', async () => {
+      await expect(ClipService.mergeClips(['invalid-1', 'invalid-2'])).rejects.toThrow('No matching clips found for merge.');
+    });
+
+    it('should merge clips in-situ, sorting chronologically, combining source names, and keeping oldest timestamp', async () => {
+      const mockClips = [
+        { id: 'clip1', text: 'First highlight', articleName: 'Doc A.pdf', timestamp: 100 },
+        { id: 'unrelated', text: 'Unrelated highlight', articleName: 'Doc B.pdf', timestamp: 150 },
+        { id: 'clip2', text: 'Second highlight', articleName: 'Doc A.pdf', timestamp: 200 },
+        { id: 'clip3', text: 'Third highlight', articleName: 'Doc C.pdf', timestamp: 50 },
+      ];
+      jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+      await ClipService.init();
+
+      await ClipService.mergeClips(['clip1', 'clip2', 'clip3']);
+
+      const updatedClips = ClipService.getClipsSync();
+
+      expect(updatedClips.length).toBe(2);
+
+      const merged = updatedClips.find(c => c.id === 'clip3');
+      expect(merged).toBeDefined();
+      expect(merged?.text).toBe('Third highlight\n\nFirst highlight\n\nSecond highlight');
+      expect(merged?.articleName).toBe('Doc C.pdf / Doc A.pdf');
+      expect(merged?.timestamp).toBe(50);
+
+      const unrelated = updatedClips.find(c => c.id === 'unrelated');
+      expect(unrelated).toBeDefined();
+      expect(unrelated?.text).toBe('Unrelated highlight');
+    });
+  });
 });

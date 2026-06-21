@@ -710,6 +710,13 @@ print(new_vc)
 main() {
     test_operating_system
 
+    # Run tests before building the plugin
+    write_color_output "Running tests before build..." "Blue"
+    if ! npm test; then
+        write_color_output "Tests failed! Build aborted." "Red"
+        exit 1
+    fi
+
     local project_root="${1:-$(pwd)}"
     increment_version_code "$project_root"
     get_package_info "$project_root"

@@ -154,6 +154,20 @@ export default function App() {
     handleCancel();
   };
 
+  const handleMergeSelected = async () => {
+    if (selectedIds.length < 2) {
+      ToastAndroid.show('Select at least 2 clips to merge!', ToastAndroid.SHORT);
+      return;
+    }
+    try {
+      await ClipService.mergeClips(selectedIds);
+      ToastAndroid.show(`${selectedIds.length} clip(s) merged!`, ToastAndroid.SHORT);
+      handleCancel();
+    } catch (e: any) {
+      ToastAndroid.show(`Merge failed: ${e.message}`, ToastAndroid.SHORT);
+    }
+  };
+
   const handleClearAll = async () => {
     await ClipService.clearClips();
     ToastAndroid.show('Clipboard cleared!', ToastAndroid.SHORT);
@@ -343,6 +357,7 @@ export default function App() {
             <>
               <View style={styles.btnRow}>
                 <HighContrastButton label="Copy Selected" onPress={handleCopySelected} />
+                <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={selectedIds.length < 2} />
                 <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
               </View>
               <View style={styles.btnRow}>
