@@ -268,4 +268,40 @@ describe('App Component', () => {
     expect(remaining[0].text).toBe('Snippet 2');
     expect(ToastAndroid.show).toHaveBeenCalledWith('1 clip(s) deleted!', ToastAndroid.SHORT);
   });
+
+  it('handles merging selected clips, showing disabled state when < 2 selected and calling merge on press when >= 2 selected', async () => {
+    await ClipService.addClip('Snippet 1', 'Doc A');
+    await ClipService.addClip('Snippet 2', 'Doc B');
+
+    const root = await renderApp();
+
+    const pressables = root.root.findAllByType(Pressable);
+    const card1 = pressables.find((p: any) =>
+      p.findAllByType(Text).some((t: any) => t.props.children === 'Snippet 1')
+    );
+    await act(async () => {
+      card1.props.onLongPress();
+    });
+
+    const mergeBtn = root.root.findByProps({ label: 'Merge Selected' });
+    expect(mergeBtn.props.disabled).toBe(true);
+
+    const card2 = pressables.find((p: any) =>
+      p.findAllByType(Text).some((t: any) => t.props.children === 'Snippet 2')
+    );
+    await act(async () => {
+      card2.props.onPress();
+    });
+
+    expect(mergeBtn.props.disabled).toBe(false);
+
+    const mergeSpy = jest.spyOn(ClipService, 'mergeClips').mockResolvedValue(undefined);
+
+    await act(async () => {
+      await mergeBtn.props.onPress();
+    });
+
+    expect(mergeSpy).toHaveBeenCalled();
+    expect(ToastAndroid.show).toHaveBeenCalledWith('2 clip(s) merged!', ToastAndroid.SHORT);
+  });
 });

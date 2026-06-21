@@ -138,6 +138,76 @@ export class ClipService {
   }
 
   /**
+   * Merge specific clippings by their IDs in-situ:
+   * - Concatenates their text chronologically (oldest first).
+   * - Joins unique article names with " / ".
+   * - Inherits the position and timestamp of the oldest selected clip.
+   */
+  static async mergeClips(idsToMerge: string[]): Promise<void> {
+    await this.init();
+    if (!idsToMerge || idsToMerge.length < 2) {
+      throw new Error('Need at least 2 clips to merge.');
+    }
+
+    // Find the clips to merge
+    const clipsToMerge = this.clips.filter(c => idsToMerge.includes(c.id));
+    if (clipsToMerge.length === 0) {
+      throw new Error('No matching clips found for merge.');
+    }
+
+    // Sort chronologically (oldest first)
+    clipsToMerge.sort((a, b) => a.timestamp - b.timestamp);
+
+    // Concatenate text
+    const mergedText = clipsToMerge.map(c => c.text).join('\n\n');
+
+    // Combine unique source document names
+    const uniqueSources = Array.from(new Set(clipsToMerge.map(c => c.articleName).filter(Boolean)));
+    const mergedArticleName = uniqueSources.join(' / ') || 'Unknown Document';
+
+    // The oldest clip is the first one in our chronologically sorted list
+    const oldestClip = clipsToMerge[0];
+
+    // Create the new merged clip
+    const mergedClip: ClipItem = {
+      id: oldestClip.id,
+      text: mergedText,
+      articleName: mergedArticleName,
+      timestamp: oldestClip.timestamp,
+    };
+
+    // Reconstruct the clips array:
+    // - Replace the oldest clip's slot in-situ with the merged clip.
+    // - Remove all other merged clips.
+    const updatedClips: ClipItem[] = [];
+    let placed = false;
+
+    for (const clip of this.clips) {
+      if (idsToMerge.includes(clip.id)) {
+        if (clip.id === oldestClip.id) {
+          updatedClips.push(mergedClip);
+          placed = true;
+        }
+        // Skip other clips that are being merged (they are deleted)
+      } else {
+        updatedClips.push(clip);
+      }
+    }
+
+    if (!placed) {
+      updatedClips.push(mergedClip);
+    }
+
+    this.clips = updatedClips;
+
+    // Persist
+    await StorageService.saveClips(this.clips);
+
+    await this.updateButton();
+    this.notifyListeners();
+  }
+
+  /**
    * Clear all aggregated text, persist empty state, and empty system clipboard.
    */
   static async clearClips(): Promise<void> {

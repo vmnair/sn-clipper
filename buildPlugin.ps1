@@ -1137,6 +1137,14 @@ function Main {
     # Detect operating system
     Test-OperatingSystem
 
+    # Run tests before building the plugin
+    Write-ColorOutput 'Running tests before build...' 'Blue'
+    npm test
+    if ($LASTEXITCODE -ne 0) {
+        Write-ColorOutput 'Tests failed! Build aborted.' 'Red'
+        return
+    }
+
     $selfCheckOk = Self-CheckScriptIntegrity -ScriptPath $PSCommandPath
     if (-not $selfCheckOk) { return }
     
