@@ -7,3 +7,6 @@
 - **Default Project Path**:
   - The active project repository is located at `/Users/vinodnair/Projects/sn-clipper` (or `~/Projects/sn-clipper`). Always check this path when referencing the Clipper plugin codebase.
 
+- **Role Boundary**:
+  - This instance is strictly for brainstorming, reviewing design decisions, and creating implementation plans. Do not make code modifications or run build/deployment commands. Instead, prepare the plan so the user can pass it to their developer instance for execution.
+

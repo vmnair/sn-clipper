@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { ClipService } from './services/ClipService';
 import { ClipItem } from './services/StorageService';
-import { PluginNoteAPI, PluginFileAPI, PluginManager } from 'sn-plugin-lib';
+import { PluginNoteAPI, PluginFileAPI, PluginManager, PluginCommAPI } from 'sn-plugin-lib';
 import { HighContrastButton } from './components/HighContrastButton';
 
 const formatDate = (timestamp?: number) => {
@@ -42,6 +42,7 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isNoteFile, setIsNoteFile] = useState<boolean>(true); // Default to true
+  const [activeNoteName, setActiveNoteName] = useState<string>('');
 
   // Search, Filter & Sort States
   const [searchQuery, setSearchQuery] = useState('');
@@ -51,16 +52,55 @@ export default function App() {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
 
   useEffect(() => {
-    // Sync current list and active file type context from Storage on open
+    // 1. Sync current list from Storage on open
     ClipService.init().then(() => {
       setClips(ClipService.getClipsSync());
-      setIsNoteFile(ClipService.getActiveFileTypeSync());
     });
 
-    // Reactively refresh UI when background actions add elements or change active file context
+    // 2. Fetch active file context in real-time on mount
+    const checkActiveFile = async () => {
+      try {
+        const fileRes = await PluginCommAPI.getCurrentFilePath();
+        if (fileRes && fileRes.success && fileRes.result) {
+          const path = fileRes.result;
+          const lowerPath = path.toLowerCase();
+          const isDoc =
+            lowerPath.endsWith('.pdf') ||
+            lowerPath.endsWith('.epub') ||
+            lowerPath.endsWith('.txt') ||
+            lowerPath.endsWith('.cbz') ||
+            lowerPath.endsWith('.fb2');
+          
+          setIsNoteFile(!isDoc);
+          
+          let noteName = '';
+          if (!isDoc) {
+            const filename = path.substring(path.lastIndexOf('/') + 1);
+            const nameWithoutExt = filename.replace(/\.note$/i, '');
+            noteName = nameWithoutExt.length > 12 ? nameWithoutExt.substring(0, 12) + '...' : nameWithoutExt;
+          }
+          setActiveNoteName(noteName);
+          await ClipService.setActiveFileType(!isDoc, noteName);
+        } else {
+          setIsNoteFile(true);
+          setActiveNoteName('Unsaved Note');
+          await ClipService.setActiveFileType(true, 'Unsaved Note');
+        }
+      } catch (err) {
+        console.error('Failed to capture active file type on mount:', err);
+        setIsNoteFile(true);
+        setActiveNoteName('Unsaved Note');
+        await ClipService.setActiveFileType(true, 'Unsaved Note');
+      }
+    };
+
+    checkActiveFile();
+
+    // 3. Reactively refresh UI when background actions add elements or change active file context
     const unsubscribe = ClipService.subscribe(() => {
       setClips([...ClipService.getClipsSync()]);
       setIsNoteFile(ClipService.getActiveFileTypeSync());
+      setActiveNoteName(ClipService.getActiveNoteNameSync());
     });
 
     return unsubscribe;
@@ -183,9 +223,29 @@ export default function App() {
     }
 
     try {
-      const sizeRes = await PluginFileAPI.getPageSize();
-      const w = sizeRes.success ? sizeRes.result.width : 1404;
-      const h = sizeRes.success ? sizeRes.result.height : 1872;
+      let notePath = '';
+      let pageNum = 0;
+
+      const pathRes = await PluginCommAPI.getCurrentFilePath();
+      if (pathRes && pathRes.success && pathRes.result) {
+        notePath = pathRes.result;
+      }
+
+      const pageRes = await PluginCommAPI.getCurrentPageNum();
+      if (pageRes && pageRes.success && pageRes.result !== undefined) {
+        pageNum = pageRes.result;
+      }
+
+      let w = 1404;
+      let h = 1872;
+
+      if (notePath) {
+        const sizeRes = await PluginFileAPI.getPageSize(notePath, pageNum);
+        if (sizeRes && sizeRes.success && sizeRes.result) {
+          w = sizeRes.result.width;
+          h = sizeRes.result.height;
+        }
+      }
 
       const textRect = {
         left: 100,
@@ -354,7 +414,7 @@ export default function App() {
               </View>
               {isNoteFile && (
                 <View style={styles.btnRow}>
-                  <HighContrastButton label="Insert Visible" onPress={() => handleInsertClips(processedClips)} disabled={processedClips.length === 0} />
+                  <HighContrastButton label={activeNoteName ? `Insert Visible to ${activeNoteName}` : 'Insert Visible'} onPress={() => handleInsertClips(processedClips)} disabled={processedClips.length === 0} />
                 </View>
               )}
             </>
@@ -367,7 +427,7 @@ export default function App() {
               </View>
               <View style={styles.btnRow}>
                 {isNoteFile && (
-                  <HighContrastButton label="Insert Selected" onPress={() => handleInsertClips(clips.filter((c) => selectedIds.includes(c.id)))} />
+                  <HighContrastButton label={activeNoteName ? `Insert Selected to ${activeNoteName}` : 'Insert Selected'} onPress={() => handleInsertClips(clips.filter((c) => selectedIds.includes(c.id)))} />
                 )}
                 <HighContrastButton label="Cancel" onPress={handleCancel} />
               </View>

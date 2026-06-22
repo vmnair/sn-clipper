@@ -11,6 +11,7 @@ export class ClipService {
   private static initPromise: Promise<void> | null = null;
   private static initialized: boolean = false;
   private static isNoteFile: boolean = false;
+  private static activeNoteName: string = '';
 
   /**
    * Ensure service is initialized before performing any operations.
@@ -74,10 +75,11 @@ export class ClipService {
   /**
    * Set active file type context (persisted).
    */
-  static async setActiveFileType(isNote: boolean): Promise<void> {
+  static async setActiveFileType(isNote: boolean, noteName: string = ''): Promise<void> {
     await this.init();
-    if (this.isNoteFile !== isNote) {
+    if (this.isNoteFile !== isNote || this.activeNoteName !== noteName) {
       this.isNoteFile = isNote;
+      this.activeNoteName = noteName;
       await StorageService.saveIsNoteFile(isNote);
       this.notifyListeners();
     }
@@ -89,6 +91,14 @@ export class ClipService {
    */
   static getActiveFileTypeSync(): boolean {
     return this.isNoteFile;
+  }
+
+  /**
+   * Get active note name context synchronously.
+   * Assumes init() has already completed.
+   */
+  static getActiveNoteNameSync(): string {
+    return this.activeNoteName;
   }
 
   /**

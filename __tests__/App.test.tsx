@@ -3,7 +3,7 @@ import renderer, { act } from 'react-test-renderer';
 import App from '../src/App';
 import { ClipService } from '../src/services/ClipService';
 import { Clipboard, ToastAndroid, Text, Pressable } from 'react-native';
-import { PluginNoteAPI, PluginFileAPI, PluginManager } from 'sn-plugin-lib';
+import { PluginNoteAPI, PluginFileAPI, PluginManager, PluginCommAPI } from 'sn-plugin-lib';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
   let store: Record<string, string> = {};
@@ -60,6 +60,10 @@ jest.mock('sn-plugin-lib', () => ({
   },
   PluginFileAPI: {
     getPageSize: jest.fn().mockResolvedValue({ success: true, result: { width: 1404, height: 1872 } }),
+  },
+  PluginCommAPI: {
+    getCurrentFilePath: jest.fn().mockResolvedValue({ success: true, result: '/user/note/MyMeetingNotes.note' }),
+    getCurrentPageNum: jest.fn().mockResolvedValue({ success: true, result: 0 }),
   },
 }));
 
@@ -157,18 +161,75 @@ describe('App Component', () => {
 
     const root = await renderApp();
 
-    const insertBtn = root.root.findByProps({ label: 'Insert Visible' });
+    const insertBtn = root.root.findByProps({ label: 'Insert Visible to MyMeetingNot...' });
     await act(async () => {
       await insertBtn.props.onPress();
     });
 
-    expect(PluginFileAPI.getPageSize).toHaveBeenCalled();
+    expect(PluginFileAPI.getPageSize).toHaveBeenCalledWith('/user/note/MyMeetingNotes.note', 0);
     expect(PluginNoteAPI.insertText).toHaveBeenCalledWith(expect.objectContaining({
       textContentFull: 'Snippet A',
       fontSize: 28,
     }));
     expect(ToastAndroid.show).toHaveBeenCalledWith('Inserted into Note!', ToastAndroid.SHORT);
     expect(PluginManager.closePluginView).toHaveBeenCalled();
+  });
+
+  it('hides insert buttons when current file is a document', async () => {
+    const getPathMock = jest.spyOn(PluginCommAPI, 'getCurrentFilePath')
+      .mockResolvedValue({ success: true, result: '/user/docs/Book.pdf' });
+
+    await ClipService.addClip('Snippet A', 'Doc A');
+    const root = await renderApp();
+
+    const copyBtn = root.root.findByProps({ label: 'Copy Visible' });
+    expect(copyBtn).toBeTruthy();
+
+    const insertButtons = root.root.findAll((el: any) =>
+      el.props.label && el.props.label.startsWith('Insert')
+    );
+    expect(insertButtons.length).toBe(0);
+
+    getPathMock.mockRestore();
+  });
+
+  it('handles newly created unsaved notes correctly', async () => {
+    const getPathMock = jest.spyOn(PluginCommAPI, 'getCurrentFilePath')
+      .mockResolvedValue({ success: true, result: '' });
+
+    await ClipService.addClip('Snippet A', 'Doc A');
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert Visible to Unsaved Note' });
+    expect(insertBtn).toBeTruthy();
+
+    getPathMock.mockRestore();
+  });
+
+  it('displays note names without truncation if they are short', async () => {
+    const getPathMock = jest.spyOn(PluginCommAPI, 'getCurrentFilePath')
+      .mockResolvedValue({ success: true, result: '/user/note/Meeting.note' });
+
+    await ClipService.addClip('Snippet A', 'Doc A');
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert Visible to Meeting' });
+    expect(insertBtn).toBeTruthy();
+
+    getPathMock.mockRestore();
+  });
+
+  it('defaults to Unsaved Note if getCurrentFilePath fails', async () => {
+    const getPathMock = jest.spyOn(PluginCommAPI, 'getCurrentFilePath')
+      .mockRejectedValue(new Error('API failure'));
+
+    await ClipService.addClip('Snippet A', 'Doc A');
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert Visible to Unsaved Note' });
+    expect(insertBtn).toBeTruthy();
+
+    getPathMock.mockRestore();
   });
 
   it('handles multi-selection long-press and selection toggle', async () => {

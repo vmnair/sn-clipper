@@ -34,6 +34,13 @@ PluginManager.registerButton(1, ['NOTE', 'DOC'], {
 });
 
 
+const getCleanNoteName = (path) => {
+  if (!path) return 'Unsaved Note';
+  const filename = path.substring(path.lastIndexOf('/') + 1);
+  const nameWithoutExt = filename.replace(/\.note$/i, '');
+  return nameWithoutExt.length > 12 ? nameWithoutExt.substring(0, 12) + '...' : nameWithoutExt;
+};
+
 // Register Event Listeners
 PluginManager.registerButtonListener({
   async onButtonPress(event) {
@@ -43,20 +50,22 @@ PluginManager.registerButtonListener({
       try {
         const fileRes = await PluginCommAPI.getCurrentFilePath();
         if (fileRes && fileRes.success && fileRes.result) {
-          const path = fileRes.result.toLowerCase();
+          const path = fileRes.result;
+          const lowerPath = path.toLowerCase();
           // Check if it's a known document format
           const isDoc =
-            path.endsWith('.pdf') ||
-            path.endsWith('.epub') ||
-            path.endsWith('.txt') ||
-            path.endsWith('.cbz') ||
-            path.endsWith('.fb2');
+            lowerPath.endsWith('.pdf') ||
+            lowerPath.endsWith('.epub') ||
+            lowerPath.endsWith('.txt') ||
+            lowerPath.endsWith('.cbz') ||
+            lowerPath.endsWith('.fb2');
           // If it is not a document, it is a note
           // (either saved .note or a new unsaved note)
-          await ClipService.setActiveFileType(!isDoc);
+          const noteName = !isDoc ? getCleanNoteName(path) : '';
+          await ClipService.setActiveFileType(!isDoc, noteName);
         } else {
           // If the path is empty/null, it is likely a newly created, unsaved note
-          await ClipService.setActiveFileType(true);
+          await ClipService.setActiveFileType(true, 'Unsaved Note');
         }
       } catch (err) {
         console.error(
@@ -64,7 +73,7 @@ PluginManager.registerButtonListener({
           err,
         );
         // Default to true (show button) in case of exceptions
-        await ClipService.setActiveFileType(true);
+        await ClipService.setActiveFileType(true, 'Unsaved Note');
       }
     }
 
