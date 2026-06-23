@@ -7,3 +7,6 @@
 - **Default Project Path**:
   - The active project repository is located at `/Users/vinodnair/Projects/sn-clipper` (or `~/Projects/sn-clipper`). Always check this path when referencing the Clipper plugin codebase.
 
+- **Thorough Research Requirement**:
+  - Before writing code or proposing implementation changes, thoroughly investigate the API capabilities, documentation, execution boundaries, and hardware/firmware platform context. Ensure all design decisions and assumptions are discussed and verified with the user prior to implementation.
+

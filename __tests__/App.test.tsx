@@ -3,7 +3,7 @@ import renderer, { act } from 'react-test-renderer';
 import App from '../src/App';
 import { ClipService } from '../src/services/ClipService';
 import { Clipboard, ToastAndroid, Text, Pressable } from 'react-native';
-import { PluginNoteAPI, PluginFileAPI, PluginManager } from 'sn-plugin-lib';
+import { PluginManager } from 'sn-plugin-lib';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
   let store: Record<string, string> = {};
@@ -54,12 +54,6 @@ jest.mock('sn-plugin-lib', () => ({
     registerButton: jest.fn(),
     registerButtonListener: jest.fn(),
     closePluginView: jest.fn(),
-  },
-  PluginNoteAPI: {
-    insertText: jest.fn().mockResolvedValue({ success: true }),
-  },
-  PluginFileAPI: {
-    getPageSize: jest.fn().mockResolvedValue({ success: true, result: { width: 1404, height: 1872 } }),
   },
 }));
 
@@ -151,25 +145,7 @@ describe('App Component', () => {
     expect(PluginManager.closePluginView).toHaveBeenCalled();
   });
 
-  it('inserts aggregate text into note', async () => {
-    await ClipService.addClip('Snippet A', 'Doc A');
-    await ClipService.setActiveFileType(true); // Simulate note context
 
-    const root = await renderApp();
-
-    const insertBtn = root.root.findByProps({ label: 'Insert Visible' });
-    await act(async () => {
-      await insertBtn.props.onPress();
-    });
-
-    expect(PluginFileAPI.getPageSize).toHaveBeenCalled();
-    expect(PluginNoteAPI.insertText).toHaveBeenCalledWith(expect.objectContaining({
-      textContentFull: 'Snippet A',
-      fontSize: 28,
-    }));
-    expect(ToastAndroid.show).toHaveBeenCalledWith('Inserted into Note!', ToastAndroid.SHORT);
-    expect(PluginManager.closePluginView).toHaveBeenCalled();
-  });
 
   it('handles multi-selection long-press and selection toggle', async () => {
     await ClipService.addClip('Snippet 1', 'Doc A');

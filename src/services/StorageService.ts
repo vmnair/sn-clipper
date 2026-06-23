@@ -10,7 +10,6 @@ export interface ClipItem {
 }
 
 const STORAGE_KEY = 'sn_clipper_aggregated_clips';
-const ACTIVE_FILE_KEY = 'sn_clipper_active_file_is_note';
 
 export class StorageService {
   /**
@@ -39,29 +38,4 @@ export class StorageService {
     return [];
   }
 
-  /**
-   * Save whether the active file context is a note file.
-   */
-  static async saveIsNoteFile(isNote: boolean): Promise<void> {
-    try {
-      await AsyncStorage.setItem(ACTIVE_FILE_KEY, JSON.stringify(isNote));
-    } catch (e) {
-      console.error('Failed to save active file type to AsyncStorage:', e);
-    }
-  }
-
-  /**
-   * Retrieve whether the active file context is a note file.
-   */
-  static async loadIsNoteFile(): Promise<boolean> {
-    try {
-      const data = await AsyncStorage.getItem(ACTIVE_FILE_KEY);
-      if (data) {
-        return JSON.parse(data) as boolean;
-      }
-    } catch (e) {
-      console.error('Failed to load active file type from AsyncStorage:', e);
-    }
-    return false;
-  }
 }

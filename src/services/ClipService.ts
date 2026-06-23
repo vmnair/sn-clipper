@@ -10,7 +10,6 @@ export class ClipService {
   private static listeners: (() => void)[] = [];
   private static initPromise: Promise<void> | null = null;
   private static initialized: boolean = false;
-  private static isNoteFile: boolean = false;
 
   /**
    * Ensure service is initialized before performing any operations.
@@ -24,7 +23,6 @@ export class ClipService {
         const loaded = await StorageService.loadClips();
         // Merge loaded clips with any clips added while init was in progress
         this.clips = [...loaded, ...this.clips];
-        this.isNoteFile = await StorageService.loadIsNoteFile();
         this.initialized = true;
         await this.updateButton();
       })();
@@ -69,26 +67,6 @@ export class ClipService {
     separator: string = '\n\n',
   ): string {
     return targetClips.map(c => c.text).join(separator);
-  }
-
-  /**
-   * Set active file type context (persisted).
-   */
-  static async setActiveFileType(isNote: boolean): Promise<void> {
-    await this.init();
-    if (this.isNoteFile !== isNote) {
-      this.isNoteFile = isNote;
-      await StorageService.saveIsNoteFile(isNote);
-      this.notifyListeners();
-    }
-  }
-
-  /**
-   * Get active file type context synchronously.
-   * Assumes init() has already completed.
-   */
-  static getActiveFileTypeSync(): boolean {
-    return this.isNoteFile;
   }
 
   /**

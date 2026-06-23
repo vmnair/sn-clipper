@@ -47,13 +47,5 @@ describe('StorageService', () => {
     expect(loaded).toEqual([]);
   });
 
-  it('should save and load isNoteFile flag correctly', async () => {
-    await StorageService.saveIsNoteFile(true);
-    let isNote = await StorageService.loadIsNoteFile();
-    expect(isNote).toBe(true);
 
-    await StorageService.saveIsNoteFile(false);
-    isNote = await StorageService.loadIsNoteFile();
-    expect(isNote).toBe(false);
-  });
 });

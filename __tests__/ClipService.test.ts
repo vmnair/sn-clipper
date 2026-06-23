@@ -116,13 +116,7 @@ describe('ClipService', () => {
     expect(ClipService.getClipsSync()).toEqual([]);
   });
 
-  it('should handle isNoteFile state updates', async () => {
-    await ClipService.setActiveFileType(true);
-    expect(ClipService.getActiveFileTypeSync()).toBe(true);
 
-    await ClipService.setActiveFileType(false);
-    expect(ClipService.getActiveFileTypeSync()).toBe(false);
-  });
 
   describe('mergeClips', () => {
     it('should throw an error if less than 2 IDs are provided', async () => {

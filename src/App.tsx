@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { ClipService } from './services/ClipService';
 import { ClipItem } from './services/StorageService';
-import { PluginNoteAPI, PluginFileAPI, PluginManager } from 'sn-plugin-lib';
+import { PluginManager } from 'sn-plugin-lib';
 import { HighContrastButton } from './components/HighContrastButton';
 
 const formatDate = (timestamp?: number) => {
@@ -41,7 +41,6 @@ export default function App() {
   const [clips, setClips] = useState<ClipItem[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
-  const [isNoteFile, setIsNoteFile] = useState<boolean>(true); // Default to true
 
   // Search, Filter & Sort States
   const [searchQuery, setSearchQuery] = useState('');
@@ -51,16 +50,14 @@ export default function App() {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
 
   useEffect(() => {
-    // Sync current list and active file type context from Storage on open
+    // Sync current list from Storage on open
     ClipService.init().then(() => {
       setClips(ClipService.getClipsSync());
-      setIsNoteFile(ClipService.getActiveFileTypeSync());
     });
 
-    // Reactively refresh UI when background actions add elements or change active file context
+    // Reactively refresh UI when background actions add elements
     const unsubscribe = ClipService.subscribe(() => {
       setClips([...ClipService.getClipsSync()]);
-      setIsNoteFile(ClipService.getActiveFileTypeSync());
     });
 
     return unsubscribe;
@@ -173,48 +170,6 @@ export default function App() {
     await ClipService.clearClips();
     ToastAndroid.show('Clipboard cleared!', ToastAndroid.SHORT);
     handleCancel();
-  };
-
-  const handleInsertClips = async (targetClips: ClipItem[]) => {
-    const text = ClipService.getAggregateTextSync(targetClips);
-    if (!text) {
-      ToastAndroid.show('Nothing to insert!', ToastAndroid.SHORT);
-      return;
-    }
-
-    try {
-      const sizeRes = await PluginFileAPI.getPageSize();
-      const w = sizeRes.success ? sizeRes.result.width : 1404;
-      const h = sizeRes.success ? sizeRes.result.height : 1872;
-
-      const textRect = {
-        left: 100,
-        top: 200,
-        right: w - 100,
-        bottom: h - 200,
-      };
-
-      const res = await PluginNoteAPI.insertText({
-        textContentFull: text,
-        textRect,
-        fontSize: 28,
-        textAlign: 0,
-        textBold: 0,
-        textItalics: 0,
-        textFrameWidthType: 0,
-        textFrameStyle: 0,
-        textEditable: 0,
-      });
-
-      if (res.success) {
-        ToastAndroid.show('Inserted into Note!', ToastAndroid.SHORT);
-        PluginManager.closePluginView();
-      } else {
-        ToastAndroid.show(`Insert failed: ${res.error?.message}`, ToastAndroid.SHORT);
-      }
-    } catch (e: any) {
-      ToastAndroid.show(`Error: ${e.message}`, ToastAndroid.SHORT);
-    }
   };
 
   const handleCancel = () => {
@@ -347,17 +302,10 @@ export default function App() {
         {/* Footer Actions Area */}
         <View style={styles.footer}>
           {!isSelectionMode ? (
-            <>
-              <View style={styles.btnRow}>
-                <HighContrastButton label="Copy Visible" onPress={handleCopyAllVisible} disabled={processedClips.length === 0} />
-                <HighContrastButton label="Clear All" onPress={handleClearAll} disabled={clips.length === 0} />
-              </View>
-              {isNoteFile && (
-                <View style={styles.btnRow}>
-                  <HighContrastButton label="Insert Visible" onPress={() => handleInsertClips(processedClips)} disabled={processedClips.length === 0} />
-                </View>
-              )}
-            </>
+            <View style={styles.btnRow}>
+              <HighContrastButton label="Copy Visible" onPress={handleCopyAllVisible} disabled={processedClips.length === 0} />
+              <HighContrastButton label="Clear All" onPress={handleClearAll} disabled={clips.length === 0} />
+            </View>
           ) : (
             <>
               <View style={styles.btnRow}>
@@ -366,9 +314,6 @@ export default function App() {
                 <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
               </View>
               <View style={styles.btnRow}>
-                {isNoteFile && (
-                  <HighContrastButton label="Insert Selected" onPress={() => handleInsertClips(clips.filter((c) => selectedIds.includes(c.id)))} />
-                )}
                 <HighContrastButton label="Cancel" onPress={handleCancel} />
               </View>
             </>
