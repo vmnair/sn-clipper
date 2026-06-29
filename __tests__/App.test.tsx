@@ -112,6 +112,9 @@ jest.mock('sn-plugin-lib', () => ({
   FileUtils: {
     deleteFile: jest.fn().mockResolvedValue(true),
   },
+  NativePluginManager: {
+    invalidatePluginView: jest.fn(),
+  },
 }));
 
 describe('App Component', () => {
@@ -519,13 +522,25 @@ describe('App Component', () => {
       });
     });
 
-    // Find crop box and trigger drag/resize touches
-    const cropBoxElement = root.root.find((el) => typeof el.props.onTouchStart === 'function' && typeof el.props.onTouchMove === 'function');
-    expect(cropBoxElement).toBeTruthy();
+    // The box (rendered first) plus its 8 resize handles all carry touch handlers.
+    const touchTargets = root.root.findAll((el) => typeof el.props.onTouchStart === 'function' && typeof el.props.onTouchMove === 'function');
+    expect(touchTargets.length).toBe(9); // 1 box + 8 handles
+    const cropBoxElement = touchTargets[0];
 
+    // Exercise a resize handle first (handles are mounted while not body-dragging):
+    // start + move drives getResizeStart/onResizeMove and the clamp math.
+    const resizeHandle = touchTargets[1];
+    await act(async () => {
+      resizeHandle.props.onTouchStart({ nativeEvent: { pageX: 300, pageY: 450 }, stopPropagation: () => {} });
+      resizeHandle.props.onTouchMove({ nativeEvent: { pageX: 320, pageY: 470 }, stopPropagation: () => {} });
+      resizeHandle.props.onTouchEnd({ nativeEvent: {}, stopPropagation: () => {} });
+    });
+
+    // Then drag the whole box (this hides the handles via isDraggingBody).
     await act(async () => {
       cropBoxElement.props.onTouchStart({ nativeEvent: { pageX: 100, pageY: 100 } });
       cropBoxElement.props.onTouchMove({ nativeEvent: { pageX: 120, pageY: 130 } });
+      cropBoxElement.props.onTouchEnd({ nativeEvent: {} });
     });
 
     // Save crop

@@ -19,6 +19,13 @@ import { ClipService } from './services/ClipService';
 import { ClipItem } from './services/StorageService';
 import { PluginManager } from 'sn-plugin-lib';
 import { HighContrastButton } from './components/HighContrastButton';
+import { CropOverlay } from './components/CropOverlay';
+
+// Derive a human-readable document title from an absolute file path.
+const deriveArticleName = (filePath?: string | null): string => {
+  if (!filePath) return 'Unknown Document';
+  return filePath.substring(filePath.lastIndexOf('/') + 1) || 'Unknown Document';
+};
 
 const formatDate = (timestamp?: number) => {
   if (!timestamp) return '';
@@ -53,13 +60,6 @@ export default function App() {
   const [cropLoading, setCropLoading] = useState(false);
   const [cropPagePath, setCropPagePath] = useState<string | null>(null);
   const [cropImageSize, setCropImageSize] = useState({ width: 1404, height: 1872 });
-  const [cropBox, setCropBox] = useState({ left: 100, top: 150, width: 200, height: 200 });
-  const [workspaceSize, setWorkspaceSize] = useState({ width: 0, height: 0 });
-
-  // Refs for Drag & Resize
-  // Refs for Drag & Resize
-  const boxDragStart = React.useRef({ x: 0, y: 0, left: 0, top: 0 });
-  const boxResizeStart = React.useRef({ x: 0, y: 0, width: 0, height: 0 });
 
   // Search, Filter & Sort States
   const [searchQuery, setSearchQuery] = useState('');
@@ -351,7 +351,14 @@ export default function App() {
 
       const tempPath = `${pluginDir}/temp_crop_page_${Date.now()}.png`;
       const isNote = file.endsWith('.note') || file.endsWith('.not') || !file.includes('.');
-      
+
+      // Fetch the page size once and reuse it for both the capture and the crop scaling.
+      let pageSize = { width: 1404, height: 1872 };
+      const sizeRes = await PluginFileAPI.getPageSize(file, pg);
+      if (sizeRes.success && sizeRes.result) {
+        pageSize = sizeRes.result;
+      }
+
       let success = false;
       if (isNote) {
         const genRes = await PluginFileAPI.generateNotePng({
@@ -363,30 +370,18 @@ export default function App() {
         });
         success = genRes && genRes.success;
       } else {
-        let size = { width: 1404, height: 1872 };
-        const sizeRes = await PluginFileAPI.getPageSize(file, pg);
-        if (sizeRes.success && sizeRes.result) {
-          size = sizeRes.result;
-        }
         const genRes = await PluginDocAPI.generateDocImage(
           file,
           pg,
           tempPath,
-          size
+          pageSize
         );
         success = genRes && genRes.success;
       }
 
       if (success) {
         setCropPagePath(tempPath);
-        let width = 1404;
-        let height = 1872;
-        const sizeRes = await PluginFileAPI.getPageSize(file, pg);
-        if (sizeRes.success && sizeRes.result) {
-          width = sizeRes.result.width;
-          height = sizeRes.result.height;
-        }
-        setCropImageSize({ width, height });
+        setCropImageSize(pageSize);
         setCropLoading(false);
       } else {
         ToastAndroid.show('Capture failed: Failed to screenshot page.', ToastAndroid.SHORT);
@@ -400,85 +395,9 @@ export default function App() {
     }
   };
 
-  const onWorkspaceLayout = (e: any) => {
-    const { width, height } = e.nativeEvent.layout;
-    setWorkspaceSize({ width, height });
-  };
-
-  const displayedSize = useMemo(() => {
-    if (workspaceSize.width === 0 || cropImageSize.width === 0) return { width: 0, height: 0 };
-    const wRatio = workspaceSize.width / cropImageSize.width;
-    const hRatio = workspaceSize.height / cropImageSize.height;
-    const ratio = Math.min(wRatio, hRatio);
-    return {
-      width: Math.floor(cropImageSize.width * ratio),
-      height: Math.floor(cropImageSize.height * ratio),
-    };
-  }, [workspaceSize, cropImageSize]);
-
-  const imageOffset = useMemo(() => {
-    return {
-      left: Math.floor((workspaceSize.width - displayedSize.width) / 2),
-      top: Math.floor((workspaceSize.height - displayedSize.height) / 2),
-    };
-  }, [workspaceSize, displayedSize]);
-
-  useEffect(() => {
-    if (displayedSize.width > 0) {
-      setCropBox({
-        left: 20,
-        top: Math.floor((displayedSize.height - 300) / 2),
-        width: displayedSize.width - 40,
-        height: 300,
-      });
-    }
-  }, [displayedSize]);
-
-  // Touch handlers for Dragging
-  const onBoxTouchStart = (e: any) => {
-    const { pageX, pageY } = e.nativeEvent;
-    boxDragStart.current = { x: pageX, y: pageY, left: cropBox.left, top: cropBox.top };
-  };
-
-  const onBoxTouchMove = (e: any) => {
-    const { pageX, pageY } = e.nativeEvent;
-    const dx = pageX - boxDragStart.current.x;
-    const dy = pageY - boxDragStart.current.y;
-    
-    const maxLeft = displayedSize.width - cropBox.width;
-    const maxTop = displayedSize.height - cropBox.height;
-    
-    setCropBox(prev => ({
-      ...prev,
-      left: Math.min(maxLeft, Math.max(0, boxDragStart.current.left + dx)),
-      top: Math.min(maxTop, Math.max(0, boxDragStart.current.top + dy)),
-    }));
-  };
-
-  // Touch handlers for Resizing
-  const onResizeTouchStart = (e: any) => {
-    e.stopPropagation();
-    const { pageX, pageY } = e.nativeEvent;
-    boxResizeStart.current = { x: pageX, y: pageY, width: cropBox.width, height: cropBox.height };
-  };
-
-  const onResizeTouchMove = (e: any) => {
-    e.stopPropagation();
-    const { pageX, pageY } = e.nativeEvent;
-    const dx = pageX - boxResizeStart.current.x;
-    const dy = pageY - boxResizeStart.current.y;
-    
-    const maxWidth = displayedSize.width - cropBox.left;
-    const maxHeight = displayedSize.height - cropBox.top;
-    
-    setCropBox(prev => ({
-      ...prev,
-      width: Math.min(maxWidth, Math.max(50, boxResizeStart.current.width + dx)),
-      height: Math.min(maxHeight, Math.max(50, boxResizeStart.current.height + dy)),
-    }));
-  };
-
-  const handleSaveCrop = async () => {
+  // Receives the selection in image-space pixels from CropOverlay, performs the
+  // native crop, stores the resulting image clip, and returns to the document.
+  const runCropSave = async (rect: { x: number; y: number; width: number; height: number }) => {
     if (!cropPagePath) return;
     try {
       const { NativeModules, ToastAndroid } = require('react-native');
@@ -488,43 +407,36 @@ export default function App() {
         return;
       }
 
-      const scaleX = cropImageSize.width / displayedSize.width;
-      const scaleY = cropImageSize.height / displayedSize.height;
-
-      const x = Math.max(0, Math.floor(cropBox.left * scaleX));
-      const y = Math.max(0, Math.floor(cropBox.top * scaleY));
-      const w = Math.min(cropImageSize.width - x, Math.ceil(cropBox.width * scaleX));
-      const h = Math.min(cropImageSize.height - y, Math.ceil(cropBox.height * scaleY));
-
       const pluginDir = await PluginManager.getPluginDirPath();
       const destPath = `${pluginDir}/clip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.png`;
 
       const success = await ImageCropModule.cropImage(
         cropPagePath,
-        x,
-        y,
-        w,
-        h,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
         destPath
       );
 
-      // Clean up temporary full-page capture image
-      const { FileUtils } = require('sn-plugin-lib');
-      try {
-        await FileUtils.deleteFile(cropPagePath);
-      } catch (err) {
-        console.error('Failed to delete temp crop page:', err);
-      }
-
       if (success) {
-        const articleName = currentFilePath ? (currentFilePath.substring(currentFilePath.lastIndexOf('/') + 1) || 'Unknown Document') : 'Unknown Document';
-        const count = await ClipService.addImageClip(destPath, articleName, w, h);
+        // Clean up the temporary full-page capture only once the crop has succeeded,
+        // so a failed crop leaves the source intact and the user can retry.
+        const { FileUtils } = require('sn-plugin-lib');
+        try {
+          await FileUtils.deleteFile(cropPagePath);
+        } catch (err) {
+          console.error('Failed to delete temp crop page:', err);
+        }
+
+        const articleName = deriveArticleName(currentFilePath);
+        const count = await ClipService.addImageClip(destPath, articleName, rect.width, rect.height);
         ToastAndroid.show(`Region cropped! (${count} clips aggregated)`, ToastAndroid.SHORT);
         setIsCropping(false);
         // Automatically close plugin view to return back to the document
         PluginManager.closePluginView();
       } else {
-        ToastAndroid.show('Crop failed.', ToastAndroid.SHORT);
+        ToastAndroid.show('Crop failed. Please try again.', ToastAndroid.SHORT);
       }
     } catch (err: any) {
       ToastAndroid.show(`Crop failed: ${err.message}`, ToastAndroid.SHORT);
@@ -540,7 +452,7 @@ export default function App() {
   const handleClipSelectionAsText = async () => {
     if (!selectionText) return;
     try {
-      const articleName = currentFilePath ? (currentFilePath.substring(currentFilePath.lastIndexOf('/') + 1) || 'Unknown Document') : 'Unknown Document';
+      const articleName = deriveArticleName(currentFilePath);
       const count = await ClipService.addClip(selectionText, articleName);
       ToastAndroid.show(`Clipped text! (${count} clips aggregated)`, ToastAndroid.SHORT);
       setSelectionText(null);
@@ -754,71 +666,16 @@ export default function App() {
 
   if (isCropping) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.container}>
-          <View style={styles.cropHeader}>
-            <Text style={styles.cropTitle}>Crop Page Section</Text>
-            <Pressable onPress={handleCancelCropping} style={styles.cropCloseButton}>
-              <Text style={styles.cropCloseText}>Cancel</Text>
-            </Pressable>
-          </View>
+      <View style={styles.cropRoot}>
+        <CropOverlay
+          pagePath={cropPagePath}
+          imageSize={cropImageSize}
+          loading={cropLoading}
+          onCancel={handleCancelCropping}
+          onSave={runCropSave}
+        />
 
-          {cropLoading ? (
-            <View style={styles.cropLoadingContainer}>
-              <Text style={styles.cropLoadingText}>Capturing page...</Text>
-            </View>
-          ) : (
-            <View style={styles.cropWorkspace} onLayout={onWorkspaceLayout}>
-              {workspaceSize.width > 0 && cropPagePath && (
-                <View style={styles.imageWrapper}>
-                  <Image
-                    source={{ uri: 'file://' + cropPagePath }}
-                    style={{
-                      width: displayedSize.width,
-                      height: displayedSize.height,
-                      position: 'absolute',
-                      left: imageOffset.left,
-                      top: imageOffset.top,
-                    }}
-                    resizeMode="contain"
-                  />
-                  
-                  {/* Draggable Crop Box */}
-                  <View
-                    style={[
-                      styles.cropBox,
-                      {
-                        left: imageOffset.left + cropBox.left,
-                        top: imageOffset.top + cropBox.top,
-                        width: cropBox.width,
-                        height: cropBox.height,
-                      }
-                    ]}
-                    onTouchStart={onBoxTouchStart}
-                    onTouchMove={onBoxTouchMove}
-                  >
-                    {/* Bounding box dashes / high-contrast outline */}
-                    <View style={styles.cropBoxOutline} />
-                    
-                    {/* Resize Handle (Bottom-Right) */}
-                    <View
-                      style={styles.resizeHandle}
-                      onTouchStart={onResizeTouchStart}
-                      onTouchMove={onResizeTouchMove}
-                    />
-                  </View>
-                </View>
-              )}
-            </View>
-          )}
-
-          {!cropLoading && (
-            <View style={styles.cropFooter}>
-              <HighContrastButton label="Clip selected region" onPress={handleSaveCrop} />
-            </View>
-          )}
-
-          {selectionText !== null && (
+        {selectionText !== null && (
             <View style={styles.modalOverlay}>
               <View style={styles.modalContent}>
                 <Text style={styles.modalTitle}>Clip Selection</Text>
@@ -848,8 +705,7 @@ export default function App() {
               </View>
             </View>
           )}
-        </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
@@ -879,11 +735,7 @@ export default function App() {
                 onPress={async () => {
                   setShowPromptDialog(false);
                   await ClipService.setPromptText('');
-                  let articleName = 'Unknown Document';
-                  if (currentFilePath) {
-                    articleName = currentFilePath.substring(currentFilePath.lastIndexOf('/') + 1) || 'Unknown Document';
-                  }
-                  await ClipService.addClip(promptText, articleName);
+                  await ClipService.addClip(promptText, deriveArticleName(currentFilePath));
                   ToastAndroid.show('Clipped as Text!', ToastAndroid.SHORT);
                   const { PluginManager } = require('sn-plugin-lib');
                   PluginManager.closePluginView();
@@ -1481,86 +1333,9 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#000000',
   },
-  cropHeader: {
-    height: 60,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    borderBottomWidth: 2,
-    borderColor: '#000000',
-    backgroundColor: '#ffffff',
-  },
-  cropTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#000000',
-  },
-  cropCloseButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderWidth: 2,
-    borderColor: '#000000',
-    backgroundColor: '#ffffff',
-  },
-  cropCloseText: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#000000',
-  },
-  cropWorkspace: {
+  // Root wrapper for crop mode: holds the CropOverlay plus the (absolute) selection modal.
+  cropRoot: {
     flex: 1,
-    backgroundColor: '#e0e0e0',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cropLoadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#ffffff',
-  },
-  cropLoadingText: {
-    fontSize: 18,
-    color: '#000000',
-  },
-  imageWrapper: {
-    width: '100%',
-    height: '100%',
-    position: 'relative',
-  },
-  cropBox: {
-    position: 'absolute',
-    borderWidth: 3,
-    borderColor: '#000000',
-    backgroundColor: 'rgba(0, 0, 0, 0.05)',
-  },
-  cropBoxOutline: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    right: 0,
-    bottom: 0,
-    borderWidth: 2,
-    borderColor: '#ffffff',
-    borderStyle: 'dashed',
-  },
-  resizeHandle: {
-    position: 'absolute',
-    right: -10,
-    bottom: -10,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 3,
-    borderColor: '#000000',
-    backgroundColor: '#ffffff',
-  },
-  cropFooter: {
-    height: 80,
-    padding: 12,
-    borderTopWidth: 2,
-    borderColor: '#000000',
     backgroundColor: '#ffffff',
   },
   modalOverlay: {
