@@ -10,3 +10,7 @@
 - **Thorough Research Requirement**:
   - Before writing code or proposing implementation changes, thoroughly investigate the API capabilities, documentation, execution boundaries, and hardware/firmware platform context. Ensure all design decisions and assumptions are discussed and verified with the user prior to implementation.
 
+- **Implementation Plan Location**:
+  - Always place the `implementation_plan.md` directly inside the repository workspace's `plan/` folder (i.e. `plan/implementation_plan.md`). The developer instance will always look there for instructions and details to execute.
+
+

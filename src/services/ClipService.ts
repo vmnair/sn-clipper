@@ -3,7 +3,7 @@
 
 import {Image} from 'react-native';
 import {PluginManager} from 'sn-plugin-lib';
-import {StorageService, ClipItem} from './StorageService';
+import {StorageService, ClipItem, ClipSubElement} from './StorageService';
 
 export class ClipService {
   private static clips: ClipItem[] = [];
@@ -52,10 +52,10 @@ export class ClipService {
    */
   static async getAggregateText(
     targetClips: ClipItem[] = this.clips,
-    separator: string = '\n\n',
+    separator: string = '\n\u200B\n',
   ): Promise<string> {
     await this.init();
-    return targetClips.map(c => c.text).join(separator);
+    return this.getAggregateTextSync(targetClips, separator);
   }
 
   /**
@@ -64,9 +64,15 @@ export class ClipService {
    */
   static getAggregateTextSync(
     targetClips: ClipItem[] = this.clips,
-    separator: string = '\n\n',
+    separator: string = '\n\u200B\n',
   ): string {
-    return targetClips.map(c => c.text).join(separator);
+    return targetClips
+      .map(c => {
+        if (c.text && c.text.trim() !== '') return c.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join(separator);
   }
 
   /**
@@ -89,6 +95,34 @@ export class ClipService {
     const newClip: ClipItem = {
       id: Date.now().toString() + Math.random().toString(36).substring(2, 6),
       text: cleanedText,
+      elements: [{ type: 'text', text: cleanedText }],
+      articleName: articleName.trim() || 'Unknown Document',
+      timestamp: Date.now(),
+    };
+
+    this.clips.push(newClip);
+
+    // Persist
+    await StorageService.saveClips(this.clips);
+
+    await this.updateButton();
+    this.notifyListeners();
+    return this.clips.length;
+  }
+
+  /**
+   * Add a new image clip, update storage, and notify listeners.
+   */
+  static async addImageClip(imagePath: string, articleName: string, width?: number, height?: number): Promise<number> {
+    await this.init();
+    if (!imagePath) {
+      return this.clips.length;
+    }
+
+    const newClip: ClipItem = {
+      id: Date.now().toString() + Math.random().toString(36).substring(2, 6),
+      text: '', // Pure image clip starts with empty text description
+      elements: [{ type: 'image', imagePath, width, height } as any],
       articleName: articleName.trim() || 'Unknown Document',
       timestamp: Date.now(),
     };
@@ -109,6 +143,24 @@ export class ClipService {
    */
   static async deleteClips(idsToDelete: string[]): Promise<void> {
     await this.init();
+    const clipsToDelete = this.clips.filter(c => idsToDelete.includes(c.id));
+
+    // Clean up corresponding image files from disk immediately
+    const { FileUtils } = require('sn-plugin-lib');
+    for (const clip of clipsToDelete) {
+      if (clip.elements) {
+        for (const elem of clip.elements) {
+          if (elem.type === 'image' && elem.imagePath) {
+            try {
+              await FileUtils.deleteFile(elem.imagePath);
+            } catch (e) {
+              console.error(`Failed to delete image file: ${elem.imagePath}`, e);
+            }
+          }
+        }
+      }
+    }
+
     this.clips = this.clips.filter(c => !idsToDelete.includes(c.id));
 
     // Persist
@@ -140,7 +192,30 @@ export class ClipService {
     clipsToMerge.sort((a, b) => a.timestamp - b.timestamp);
 
     // Concatenate text
-    const mergedText = clipsToMerge.map(c => c.text).join('\n\n');
+    // Concatenate text elements chronologically from all sub-elements
+    const textParts: string[] = [];
+    for (const clip of clipsToMerge) {
+      if (clip.elements && clip.elements.length > 0) {
+        for (const el of clip.elements) {
+          if (el.type === 'text' && el.text) {
+            textParts.push(el.text);
+          }
+        }
+      } else if (clip.text) {
+        textParts.push(clip.text);
+      }
+    }
+    const mergedText = textParts.join('\n\u200B\n');
+
+    // Concatenate sub-elements sequentially
+    const mergedElements: ClipSubElement[] = [];
+    for (const clip of clipsToMerge) {
+      if (clip.elements && clip.elements.length > 0) {
+        mergedElements.push(...clip.elements);
+      } else if (clip.text) {
+        mergedElements.push({ type: 'text', text: clip.text });
+      }
+    }
 
     // Combine unique source document names
     const uniqueSources = Array.from(new Set(clipsToMerge.map(c => c.articleName).filter(Boolean)));
@@ -153,6 +228,7 @@ export class ClipService {
     const mergedClip: ClipItem = {
       id: oldestClip.id,
       text: mergedText,
+      elements: mergedElements,
       articleName: mergedArticleName,
       timestamp: oldestClip.timestamp,
     };
@@ -186,6 +262,11 @@ export class ClipService {
 
     await this.updateButton();
     this.notifyListeners();
+
+    // Sync system clipboard
+    const fullText = await this.getAggregateText();
+    const { Clipboard } = require('react-native');
+    Clipboard.setString(fullText);
   }
 
   /**
@@ -193,6 +274,23 @@ export class ClipService {
    */
   static async clearClips(): Promise<void> {
     await this.init();
+
+    // Clean up all image files from disk immediately to prevent leaks
+    const { FileUtils } = require('sn-plugin-lib');
+    for (const clip of this.clips) {
+      if (clip.elements) {
+        for (const elem of clip.elements) {
+          if (elem.type === 'image' && elem.imagePath) {
+            try {
+              await FileUtils.deleteFile(elem.imagePath);
+            } catch (e) {
+              console.error(`Failed to delete image file: ${elem.imagePath}`, e);
+            }
+          }
+        }
+      }
+    }
+
     this.clips = [];
     await StorageService.saveClips(this.clips);
 
@@ -231,5 +329,21 @@ export class ClipService {
 
   private static notifyListeners(): void {
     this.listeners.forEach(l => l());
+  }
+
+  static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped'): Promise<void> {
+    await StorageService.setLaunchMode(mode as any);
+  }
+
+  static async getLaunchMode(): Promise<'normal' | 'crop' | 'prompt' | 'autoclipped'> {
+    return await StorageService.getLaunchMode() as any;
+  }
+
+  static async setPromptText(text: string): Promise<void> {
+    await StorageService.setPromptText(text);
+  }
+
+  static async getPromptText(): Promise<string> {
+    return await StorageService.getPromptText();
   }
 }

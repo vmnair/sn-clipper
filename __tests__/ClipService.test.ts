@@ -51,6 +51,9 @@ jest.mock('sn-plugin-lib', () => ({
     registerButtonListener: jest.fn(),
     closePluginView: jest.fn(),
   },
+  FileUtils: {
+    deleteFile: jest.fn().mockResolvedValue(true),
+  },
 }));
 
 describe('ClipService', () => {
@@ -145,13 +148,78 @@ describe('ClipService', () => {
 
       const merged = updatedClips.find(c => c.id === 'clip3');
       expect(merged).toBeDefined();
-      expect(merged?.text).toBe('Third highlight\n\nFirst highlight\n\nSecond highlight');
+      expect(merged?.text).toBe('Third highlight\n\u200B\nFirst highlight\n\u200B\nSecond highlight');
       expect(merged?.articleName).toBe('Doc C.pdf / Doc A.pdf');
       expect(merged?.timestamp).toBe(50);
 
       const unrelated = updatedClips.find(c => c.id === 'unrelated');
       expect(unrelated).toBeDefined();
       expect(unrelated?.text).toBe('Unrelated highlight');
+    });
+
+    it('should merge sub-elements sequentially including images', async () => {
+      const mockClips = [
+        {
+          id: 'clip1',
+          text: 'Snippet 1',
+          elements: [{ type: 'text', text: 'Snippet 1' }],
+          articleName: 'Doc A.pdf',
+          timestamp: 100,
+        },
+        {
+          id: 'clip2',
+          text: '',
+          elements: [{ type: 'image', imagePath: '/path/to/image.png' }],
+          articleName: 'Doc A.pdf',
+          timestamp: 200,
+        },
+      ];
+      jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+      await ClipService.init();
+
+      await ClipService.mergeClips(['clip1', 'clip2']);
+
+      const updatedClips = ClipService.getClipsSync();
+      expect(updatedClips.length).toBe(1);
+      expect(updatedClips[0].elements).toEqual([
+        { type: 'text', text: 'Snippet 1' },
+        { type: 'image', imagePath: '/path/to/image.png' },
+      ]);
+    });
+  });
+
+  describe('image clipping and cleanup', () => {
+    it('should add image clip correctly', async () => {
+      const count = await ClipService.addImageClip('/path/to/lasso.png', 'My Doc');
+      expect(count).toBe(1);
+
+      const clips = ClipService.getClipsSync();
+      expect(clips[0].text).toBe('');
+      expect(clips[0].articleName).toBe('My Doc');
+      expect(clips[0].elements).toEqual([{ type: 'image', imagePath: '/path/to/lasso.png' }]);
+    });
+
+    it('should delete associated PNG file from disk when clip is deleted', async () => {
+      const { FileUtils } = require('sn-plugin-lib');
+      await ClipService.addImageClip('/path/to/delete.png', 'My Doc');
+      const clips = ClipService.getClipsSync();
+      expect(clips.length).toBe(1);
+
+      await ClipService.deleteClips([clips[0].id]);
+      expect(ClipService.getClipsSync().length).toBe(0);
+      expect(FileUtils.deleteFile).toHaveBeenCalledWith('/path/to/delete.png');
+    });
+
+    it('should delete all associated PNG files when clearClips is called', async () => {
+      const { FileUtils } = require('sn-plugin-lib');
+      await ClipService.addImageClip('/path/to/1.png', 'Doc A');
+      await ClipService.addImageClip('/path/to/2.png', 'Doc B');
+      expect(ClipService.getClipsSync().length).toBe(2);
+
+      await ClipService.clearClips();
+      expect(ClipService.getClipsSync().length).toBe(0);
+      expect(FileUtils.deleteFile).toHaveBeenCalledWith('/path/to/1.png');
+      expect(FileUtils.deleteFile).toHaveBeenCalledWith('/path/to/2.png');
     });
   });
 });

@@ -4,6 +4,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import {
   SafeAreaView,
+  FlatList,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,6 +13,7 @@ import {
   Pressable,
   TextInput,
   Image,
+  AppState,
 } from 'react-native';
 import { ClipService } from './services/ClipService';
 import { ClipItem } from './services/StorageService';
@@ -41,6 +43,23 @@ export default function App() {
   const [clips, setClips] = useState<ClipItem[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [isNoteFile, setIsNoteFile] = useState(false);
+  const [currentFilePath, setCurrentFilePath] = useState<string | null>(null);
+  const [currentPageNum, setCurrentPageNum] = useState<number>(0);
+
+  // Cropping States
+  const [isCropping, setIsCropping] = useState(false);
+  const [selectionText, setSelectionText] = useState<string | null>(null);
+  const [cropLoading, setCropLoading] = useState(false);
+  const [cropPagePath, setCropPagePath] = useState<string | null>(null);
+  const [cropImageSize, setCropImageSize] = useState({ width: 1404, height: 1872 });
+  const [cropBox, setCropBox] = useState({ left: 100, top: 150, width: 200, height: 200 });
+  const [workspaceSize, setWorkspaceSize] = useState({ width: 0, height: 0 });
+
+  // Refs for Drag & Resize
+  // Refs for Drag & Resize
+  const boxDragStart = React.useRef({ x: 0, y: 0, left: 0, top: 0 });
+  const boxResizeStart = React.useRef({ x: 0, y: 0, width: 0, height: 0 });
 
   // Search, Filter & Sort States
   const [searchQuery, setSearchQuery] = useState('');
@@ -48,6 +67,8 @@ export default function App() {
   const [activeSourceFilter, setActiveSourceFilter] = useState<string | null>(null); // null = All Sources
   const [activeSortMode, setActiveSortMode] = useState<'oldest' | 'newest'>('newest');
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
+  const [showPromptDialog, setShowPromptDialog] = useState(false);
+  const [promptText, setPromptText] = useState('');
 
   useEffect(() => {
     // Sync current list from Storage on open
@@ -55,12 +76,128 @@ export default function App() {
       setClips(ClipService.getClipsSync());
     });
 
+    // Check active file context (Note vs Document)
+    const checkContext = async () => {
+      try {
+        const { PluginCommAPI, PluginFileAPI, PluginDocAPI } = require('sn-plugin-lib');
+        
+        const launchMode = await ClipService.getLaunchMode();
+        if (launchMode === 'autoclipped') {
+          await ClipService.setLaunchMode('normal');
+          const { BackHandler } = require('react-native');
+          BackHandler.exitApp();
+          return;
+        }
+
+        if (launchMode === 'prompt') {
+          await ClipService.setLaunchMode('normal');
+          setIsCropping(false);
+          const text = await ClipService.getPromptText();
+          if (text && text.trim().length > 0) {
+            setPromptText(text);
+            setShowPromptDialog(true);
+          } else {
+            const { BackHandler } = require('react-native');
+            BackHandler.exitApp();
+          }
+          
+          // Still load active file path so we can crop if user chooses Image
+          const fileRes = await PluginCommAPI.getCurrentFilePath();
+          if (fileRes.success && fileRes.result) {
+            const filePath = fileRes.result;
+            setCurrentFilePath(filePath);
+            const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
+            const isDoc = ['.pdf', '.epub', '.txt', '.cbz', '.fb2'].includes(ext);
+            setIsNoteFile(!isDoc);
+
+            let pageNum = 0;
+            const pageRes = await PluginCommAPI.getCurrentPageNum();
+            if (pageRes.success && pageRes.result !== undefined && pageRes.result !== null) {
+              pageNum = pageRes.result;
+              setCurrentPageNum(pageNum);
+            }
+          }
+          return;
+        }
+
+        if (launchMode !== 'prompt') {
+          setShowPromptDialog(false);
+          setPromptText('');
+        }
+
+        if (launchMode !== 'crop') {
+          setIsCropping(false);
+        }
+
+        const fileRes = await PluginCommAPI.getCurrentFilePath();
+        if (fileRes.success && fileRes.result) {
+          const filePath = fileRes.result;
+          setCurrentFilePath(filePath);
+          const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
+          const isDoc = ['.pdf', '.epub', '.txt', '.cbz', '.fb2'].includes(ext);
+          setIsNoteFile(!isDoc);
+
+          let pageNum = 0;
+          const pageRes = await PluginCommAPI.getCurrentPageNum();
+          if (pageRes.success && pageRes.result !== undefined && pageRes.result !== null) {
+            pageNum = pageRes.result;
+            setCurrentPageNum(pageNum);
+          }
+
+          if (launchMode === 'crop') {
+            await ClipService.setLaunchMode('normal');
+            setIsCropping(true);
+            const textRes = await PluginDocAPI.getLastSelectedText() as any;
+            if (textRes && textRes.success && textRes.result && textRes.result.trim().length > 0) {
+              setSelectionText(textRes.result);
+            } else {
+              await handleStartCropping(filePath, pageNum);
+            }
+          }
+        } else {
+          setIsNoteFile(true); // Default to note file context
+        }
+      } catch (e) {
+        console.error('Failed to query file path context:', e);
+        setIsNoteFile(true);
+      }
+    };
+    checkContext();
+
+    const handleAppStateChange = (nextAppState: any) => {
+      if (nextAppState === 'active') {
+        checkContext();
+      }
+    };
+    const appStateSub = AppState.addEventListener('change', handleAppStateChange);
+
     // Reactively refresh UI when background actions add elements
     const unsubscribe = ClipService.subscribe(() => {
       setClips([...ClipService.getClipsSync()]);
     });
 
-    return unsubscribe;
+    const { NativeModules, DeviceEventEmitter } = require('react-native');
+    const { ImageCropModule } = NativeModules;
+    if (ImageCropModule && typeof ImageCropModule.registerAsForeground === 'function') {
+      ImageCropModule.registerAsForeground().catch((err: any) => console.error(err));
+    }
+
+    let subscription: any = null;
+    if (DeviceEventEmitter && typeof DeviceEventEmitter.addListener === 'function') {
+      subscription = DeviceEventEmitter.addListener('onLaunchModeChange', (mode: string) => {
+        if (mode === 'prompt') {
+          checkContext();
+        }
+      });
+    }
+
+    return () => {
+      unsubscribe();
+      appStateSub.remove();
+      if (subscription) {
+        subscription.remove();
+      }
+    };
   }, []);
 
   // Harvest unique document filenames from clips list
@@ -188,6 +325,590 @@ export default function App() {
     setIsSearchVisible(!isSearchVisible);
   };
 
+  // -------------------------------------------------------------
+  // Custom Page Cropping Logic & Coordinates Scaling
+  // -------------------------------------------------------------
+
+  const handleStartCropping = async (targetPath?: string, targetPage?: number) => {
+    const file = targetPath || currentFilePath;
+    const pg = targetPage !== undefined ? targetPage : currentPageNum;
+    if (!file) {
+      ToastAndroid.show('No active document to crop.', ToastAndroid.SHORT);
+      return;
+    }
+    setIsCropping(true);
+    setCropLoading(true);
+    
+    try {
+      const { PluginFileAPI, PluginDocAPI } = require('sn-plugin-lib');
+      const pluginDir = await PluginManager.getPluginDirPath();
+      if (!pluginDir) {
+        ToastAndroid.show('Storage error: Cannot access plugin folder.', ToastAndroid.SHORT);
+        setIsCropping(false);
+        setCropLoading(false);
+        return;
+      }
+
+      const tempPath = `${pluginDir}/temp_crop_page_${Date.now()}.png`;
+      const isNote = file.endsWith('.note') || file.endsWith('.not') || !file.includes('.');
+      
+      let success = false;
+      if (isNote) {
+        const genRes = await PluginFileAPI.generateNotePng({
+          notePath: file,
+          page: pg,
+          times: 1,
+          pngPath: tempPath,
+          type: 1
+        });
+        success = genRes && genRes.success;
+      } else {
+        let size = { width: 1404, height: 1872 };
+        const sizeRes = await PluginFileAPI.getPageSize(file, pg);
+        if (sizeRes.success && sizeRes.result) {
+          size = sizeRes.result;
+        }
+        const genRes = await PluginDocAPI.generateDocImage(
+          file,
+          pg,
+          tempPath,
+          size
+        );
+        success = genRes && genRes.success;
+      }
+
+      if (success) {
+        setCropPagePath(tempPath);
+        let width = 1404;
+        let height = 1872;
+        const sizeRes = await PluginFileAPI.getPageSize(file, pg);
+        if (sizeRes.success && sizeRes.result) {
+          width = sizeRes.result.width;
+          height = sizeRes.result.height;
+        }
+        setCropImageSize({ width, height });
+        setCropLoading(false);
+      } else {
+        ToastAndroid.show('Capture failed: Failed to screenshot page.', ToastAndroid.SHORT);
+        setIsCropping(false);
+        setCropLoading(false);
+      }
+    } catch (err: any) {
+      ToastAndroid.show(`Capture error: ${err.message}`, ToastAndroid.SHORT);
+      setIsCropping(false);
+      setCropLoading(false);
+    }
+  };
+
+  const onWorkspaceLayout = (e: any) => {
+    const { width, height } = e.nativeEvent.layout;
+    setWorkspaceSize({ width, height });
+  };
+
+  const displayedSize = useMemo(() => {
+    if (workspaceSize.width === 0 || cropImageSize.width === 0) return { width: 0, height: 0 };
+    const wRatio = workspaceSize.width / cropImageSize.width;
+    const hRatio = workspaceSize.height / cropImageSize.height;
+    const ratio = Math.min(wRatio, hRatio);
+    return {
+      width: Math.floor(cropImageSize.width * ratio),
+      height: Math.floor(cropImageSize.height * ratio),
+    };
+  }, [workspaceSize, cropImageSize]);
+
+  const imageOffset = useMemo(() => {
+    return {
+      left: Math.floor((workspaceSize.width - displayedSize.width) / 2),
+      top: Math.floor((workspaceSize.height - displayedSize.height) / 2),
+    };
+  }, [workspaceSize, displayedSize]);
+
+  useEffect(() => {
+    if (displayedSize.width > 0) {
+      setCropBox({
+        left: 20,
+        top: Math.floor((displayedSize.height - 300) / 2),
+        width: displayedSize.width - 40,
+        height: 300,
+      });
+    }
+  }, [displayedSize]);
+
+  // Touch handlers for Dragging
+  const onBoxTouchStart = (e: any) => {
+    const { pageX, pageY } = e.nativeEvent;
+    boxDragStart.current = { x: pageX, y: pageY, left: cropBox.left, top: cropBox.top };
+  };
+
+  const onBoxTouchMove = (e: any) => {
+    const { pageX, pageY } = e.nativeEvent;
+    const dx = pageX - boxDragStart.current.x;
+    const dy = pageY - boxDragStart.current.y;
+    
+    const maxLeft = displayedSize.width - cropBox.width;
+    const maxTop = displayedSize.height - cropBox.height;
+    
+    setCropBox(prev => ({
+      ...prev,
+      left: Math.min(maxLeft, Math.max(0, boxDragStart.current.left + dx)),
+      top: Math.min(maxTop, Math.max(0, boxDragStart.current.top + dy)),
+    }));
+  };
+
+  // Touch handlers for Resizing
+  const onResizeTouchStart = (e: any) => {
+    e.stopPropagation();
+    const { pageX, pageY } = e.nativeEvent;
+    boxResizeStart.current = { x: pageX, y: pageY, width: cropBox.width, height: cropBox.height };
+  };
+
+  const onResizeTouchMove = (e: any) => {
+    e.stopPropagation();
+    const { pageX, pageY } = e.nativeEvent;
+    const dx = pageX - boxResizeStart.current.x;
+    const dy = pageY - boxResizeStart.current.y;
+    
+    const maxWidth = displayedSize.width - cropBox.left;
+    const maxHeight = displayedSize.height - cropBox.top;
+    
+    setCropBox(prev => ({
+      ...prev,
+      width: Math.min(maxWidth, Math.max(50, boxResizeStart.current.width + dx)),
+      height: Math.min(maxHeight, Math.max(50, boxResizeStart.current.height + dy)),
+    }));
+  };
+
+  const handleSaveCrop = async () => {
+    if (!cropPagePath) return;
+    try {
+      const { NativeModules, ToastAndroid } = require('react-native');
+      const { ImageCropModule } = NativeModules;
+      if (!ImageCropModule) {
+        ToastAndroid.show('Crop failed: ImageCropModule is not registered.', ToastAndroid.SHORT);
+        return;
+      }
+
+      const scaleX = cropImageSize.width / displayedSize.width;
+      const scaleY = cropImageSize.height / displayedSize.height;
+
+      const x = Math.max(0, Math.floor(cropBox.left * scaleX));
+      const y = Math.max(0, Math.floor(cropBox.top * scaleY));
+      const w = Math.min(cropImageSize.width - x, Math.ceil(cropBox.width * scaleX));
+      const h = Math.min(cropImageSize.height - y, Math.ceil(cropBox.height * scaleY));
+
+      const pluginDir = await PluginManager.getPluginDirPath();
+      const destPath = `${pluginDir}/clip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.png`;
+
+      const success = await ImageCropModule.cropImage(
+        cropPagePath,
+        x,
+        y,
+        w,
+        h,
+        destPath
+      );
+
+      // Clean up temporary full-page capture image
+      const { FileUtils } = require('sn-plugin-lib');
+      try {
+        await FileUtils.deleteFile(cropPagePath);
+      } catch (err) {
+        console.error('Failed to delete temp crop page:', err);
+      }
+
+      if (success) {
+        const articleName = currentFilePath ? (currentFilePath.substring(currentFilePath.lastIndexOf('/') + 1) || 'Unknown Document') : 'Unknown Document';
+        const count = await ClipService.addImageClip(destPath, articleName, w, h);
+        ToastAndroid.show(`Region cropped! (${count} clips aggregated)`, ToastAndroid.SHORT);
+        setIsCropping(false);
+        // Automatically close plugin view to return back to the document
+        PluginManager.closePluginView();
+      } else {
+        ToastAndroid.show('Crop failed.', ToastAndroid.SHORT);
+      }
+    } catch (err: any) {
+      ToastAndroid.show(`Crop failed: ${err.message}`, ToastAndroid.SHORT);
+    }
+  };
+
+  const handleCancelCropping = () => {
+    setIsCropping(false);
+    const { PluginManager } = require('sn-plugin-lib');
+    PluginManager.closePluginView();
+  };
+
+  const handleClipSelectionAsText = async () => {
+    if (!selectionText) return;
+    try {
+      const articleName = currentFilePath ? (currentFilePath.substring(currentFilePath.lastIndexOf('/') + 1) || 'Unknown Document') : 'Unknown Document';
+      const count = await ClipService.addClip(selectionText, articleName);
+      ToastAndroid.show(`Clipped text! (${count} clips aggregated)`, ToastAndroid.SHORT);
+      setSelectionText(null);
+      setIsCropping(false);
+      const { PluginManager } = require('sn-plugin-lib');
+      PluginManager.closePluginView();
+    } catch (err: any) {
+      ToastAndroid.show(`Clipping failed: ${err.message}`, ToastAndroid.SHORT);
+    }
+  };
+
+  const handleClipSelectionAsImage = async () => {
+    setSelectionText(null);
+    if (currentFilePath) {
+      await handleStartCropping(currentFilePath, currentPageNum);
+    }
+  };
+
+  const handleCancelSelectionModal = () => {
+    setSelectionText(null);
+    setIsCropping(false);
+    const { PluginManager } = require('sn-plugin-lib');
+    PluginManager.closePluginView();
+  };
+
+  const handleInsertVisible = async () => {
+    await runInsertClips(processedClips);
+  };
+
+  const handleInsertSelected = async () => {
+    const selectedClips = clips.filter((c) => selectedIds.includes(c.id));
+    selectedClips.sort((a, b) => a.timestamp - b.timestamp);
+    await runInsertClips(selectedClips);
+    handleCancel();
+  };
+
+  const runInsertClips = async (clipsToInsert: ClipItem[]) => {
+    if (clipsToInsert.length === 0) return;
+    try {
+      const { PluginCommAPI, PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
+      
+      const fileRes = await PluginCommAPI.getCurrentFilePath();
+      if (!fileRes.success || !fileRes.result) {
+        ToastAndroid.show('Insert failed: No active file.', ToastAndroid.SHORT);
+        return;
+      }
+      const notePath = fileRes.result;
+      const pageRes = await PluginCommAPI.getCurrentPageNum();
+      const page = (pageRes.success && pageRes.result !== undefined && pageRes.result !== null) ? pageRes.result : 0;
+
+      await PluginNoteAPI.saveCurrentNote();
+
+      let pageWidth = 1404;
+      let pageHeight = 1872;
+      const sizeRes = await PluginFileAPI.getPageSize(notePath, page);
+      if (sizeRes.success && sizeRes.result) {
+        pageWidth = sizeRes.result.width;
+        pageHeight = sizeRes.result.height;
+      }
+
+      // 1. Get existing page elements to calculate starting Y coordinate (Append feature)
+      let currentY = 100;
+      const margin = 30;
+
+      const elementsRes = await PluginFileAPI.getElements(page, notePath) as any;
+      if (elementsRes && elementsRes.success && Array.isArray(elementsRes.result)) {
+        for (const el of elementsRes.result) {
+          if (el.status !== undefined && el.status !== 0) {
+            continue;
+          }
+          let elBottom = 0;
+          if (el.type === 500 || el.type === 501 || el.type === 502) { // Text Box types
+            if (el.textBox && el.textBox.textRect) {
+              elBottom = el.textBox.textRect.bottom;
+            }
+          } else if (el.type === 200) { // Picture/Image type
+            if (el.picture && el.picture.rect) {
+              elBottom = el.picture.rect.bottom;
+            }
+          }
+          if (elBottom <= 0 && el.maxY) {
+            elBottom = el.maxY;
+          }
+          if (elBottom > currentY) {
+            currentY = elBottom;
+          }
+        }
+      }
+      // Start slightly below the bottom-most element
+      if (currentY > 100) {
+        currentY += margin;
+      }
+
+      const allElements: { type: 'text' | 'image'; text?: string; imagePath?: string }[] = [];
+      for (const clip of clipsToInsert) {
+        allElements.push(...clip.elements);
+      }
+
+      // Helper function to load image size
+      const getImgSize = (elem: any) => new Promise<{ width: number; height: number }>((resolve) => {
+        if (elem.width && elem.height) {
+          resolve({ width: elem.width, height: elem.height });
+          return;
+        }
+        Image.getSize(
+          'file://' + elem.imagePath,
+          (w, h) => resolve({ width: w, height: h }),
+          () => resolve({ width: 600, height: 300 }) // fallback to 2:1 ratio (600 width, 300 height)
+        );
+      });
+
+      // 2. Pre-calculate total height needed for selected clips
+      let totalNeededHeight = 0;
+      const elementLayouts: { type: 'text' | 'image'; text?: string; imagePath?: string; width?: number; height?: number; layoutHeight: number }[] = [];
+
+      for (const elem of allElements) {
+        if (elem.type === 'text' && elem.text) {
+          const charsPerLine = Math.floor((pageWidth - 200) / 24) || 25;
+          const lineCount = Math.ceil(elem.text.length / charsPerLine);
+          const estimatedHeight = Math.max(100, lineCount * 60 + 20);
+          elementLayouts.push({ ...elem, layoutHeight: estimatedHeight });
+          totalNeededHeight += estimatedHeight + margin;
+        } else if (elem.type === 'image' && elem.imagePath) {
+          const { width: imgW, height: imgH } = await getImgSize(elem);
+          const targetW = pageWidth - 200;
+          const targetH = Math.round(targetW * (imgH / imgW));
+          elementLayouts.push({ ...elem, layoutHeight: targetH });
+          totalNeededHeight += targetH + margin;
+        }
+      }
+
+      // 3. Bounds check: warning if selected text/images do not fit (Non-blocking warning)
+      if (currentY + totalNeededHeight > pageHeight - 100) {
+        ToastAndroid.show(
+          'Warning: Selected clips may exceed page bounds.',
+          ToastAndroid.LONG
+        );
+      }
+
+      // 4. Sequential chronological insertion
+      for (const elem of elementLayouts) {
+        if (elem.type === 'text' && elem.text) {
+          const rect = {
+            left: 100,
+            top: currentY,
+            right: pageWidth - 100,
+            bottom: currentY + elem.layoutHeight,
+          };
+
+          const insertRes = await PluginNoteAPI.insertText({
+            textContentFull: elem.text,
+            textRect: rect,
+            fontSize: 44,
+            textAlign: 0,
+            textBold: 0,
+            textItalics: 0,
+            textFrameWidthType: 0,
+            textFrameStyle: 0,
+            textEditable: 1,
+          });
+
+          if (insertRes && insertRes.success) {
+            currentY += elem.layoutHeight + margin;
+          }
+          await new Promise(r => setTimeout(r, 500));
+        } else if (elem.type === 'image' && elem.imagePath) {
+          // A. Insert image (takes native default center coordinate in-memory)
+          const insertRes = await PluginNoteAPI.insertImage(elem.imagePath) as any;
+          if (insertRes && insertRes.success && insertRes.result && insertRes.result.uuid) {
+            const imgUuid = insertRes.result.uuid;
+
+            // B. Commit insertion to disk file
+            await PluginNoteAPI.saveCurrentNote();
+
+            // C. Load elements from disk and locate the image by UUID
+            const pageElementsRes = await PluginFileAPI.getElements(page, notePath) as any;
+            if (pageElementsRes && pageElementsRes.success && Array.isArray(pageElementsRes.result)) {
+              const imgElem = pageElementsRes.result.find((el: any) => el.uuid === imgUuid);
+              if (imgElem) {
+                // D. Modify coordinates to keep chronological order on disk
+                imgElem.picture = {
+                  picturePath: elem.imagePath,
+                  rect: {
+                    left: 100,
+                    top: currentY,
+                    right: pageWidth - 100,
+                    bottom: currentY + elem.layoutHeight,
+                  }
+                };
+                await PluginFileAPI.modifyElements(notePath, page, [imgElem]);
+              }
+            }
+            currentY += elem.layoutHeight + margin;
+          }
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }
+      
+      ToastAndroid.show('Clips inserted successfully!', ToastAndroid.SHORT);
+      // Remove the successfully inserted clips from Clipper history database
+      const insertedIds = clipsToInsert.map(c => c.id);
+      await ClipService.deleteClips(insertedIds);
+
+      await PluginNoteAPI.saveCurrentNote();
+      // Automatically close Clipper view to show the newly inserted note contents
+      PluginManager.closePluginView();
+    } catch (e: any) {
+      ToastAndroid.show(`Insert failed: ${e.message}`, ToastAndroid.SHORT);
+    }
+  };
+
+  if (isCropping) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.container}>
+          <View style={styles.cropHeader}>
+            <Text style={styles.cropTitle}>Crop Page Section</Text>
+            <Pressable onPress={handleCancelCropping} style={styles.cropCloseButton}>
+              <Text style={styles.cropCloseText}>Cancel</Text>
+            </Pressable>
+          </View>
+
+          {cropLoading ? (
+            <View style={styles.cropLoadingContainer}>
+              <Text style={styles.cropLoadingText}>Capturing page...</Text>
+            </View>
+          ) : (
+            <View style={styles.cropWorkspace} onLayout={onWorkspaceLayout}>
+              {workspaceSize.width > 0 && cropPagePath && (
+                <View style={styles.imageWrapper}>
+                  <Image
+                    source={{ uri: 'file://' + cropPagePath }}
+                    style={{
+                      width: displayedSize.width,
+                      height: displayedSize.height,
+                      position: 'absolute',
+                      left: imageOffset.left,
+                      top: imageOffset.top,
+                    }}
+                    resizeMode="contain"
+                  />
+                  
+                  {/* Draggable Crop Box */}
+                  <View
+                    style={[
+                      styles.cropBox,
+                      {
+                        left: imageOffset.left + cropBox.left,
+                        top: imageOffset.top + cropBox.top,
+                        width: cropBox.width,
+                        height: cropBox.height,
+                      }
+                    ]}
+                    onTouchStart={onBoxTouchStart}
+                    onTouchMove={onBoxTouchMove}
+                  >
+                    {/* Bounding box dashes / high-contrast outline */}
+                    <View style={styles.cropBoxOutline} />
+                    
+                    {/* Resize Handle (Bottom-Right) */}
+                    <View
+                      style={styles.resizeHandle}
+                      onTouchStart={onResizeTouchStart}
+                      onTouchMove={onResizeTouchMove}
+                    />
+                  </View>
+                </View>
+              )}
+            </View>
+          )}
+
+          {!cropLoading && (
+            <View style={styles.cropFooter}>
+              <HighContrastButton label="Clip selected region" onPress={handleSaveCrop} />
+            </View>
+          )}
+
+          {selectionText !== null && (
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Clip Selection</Text>
+                <Text style={styles.modalDescription}>
+                  You selected text. How would you like to clip this selection?
+                </Text>
+                <View style={styles.modalButtons}>
+                  <Pressable
+                    onPress={handleClipSelectionAsText}
+                    style={[styles.modalButton, styles.modalButtonPrimary]}
+                  >
+                    <Text style={styles.modalButtonTextPrimary}>Clip as Text</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={handleClipSelectionAsImage}
+                    style={[styles.modalButton, styles.modalButtonSecondary]}
+                  >
+                    <Text style={styles.modalButtonTextSecondary}>Clip as Image</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={handleCancelSelectionModal}
+                    style={[styles.modalButton, styles.modalButtonCancel]}
+                  >
+                    <Text style={styles.modalButtonTextCancel}>Cancel</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          )}
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (showPromptDialog) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Clip Selection</Text>
+            <Text style={styles.modalDescription}>
+              How would you like to clip this selection?{"\n\n"}
+              <Text style={{ fontWeight: 'bold', fontStyle: 'italic' }}>"{promptText}"</Text>
+            </Text>
+            <View style={styles.modalButtons}>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonPrimary]}
+                onPress={async () => {
+                  setShowPromptDialog(false);
+                  await ClipService.setPromptText('');
+                  await handleStartCropping(currentFilePath || undefined, currentPageNum);
+                }}
+              >
+                <Text style={styles.modalButtonTextPrimary}>Clip Region</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonSecondary]}
+                onPress={async () => {
+                  setShowPromptDialog(false);
+                  await ClipService.setPromptText('');
+                  let articleName = 'Unknown Document';
+                  if (currentFilePath) {
+                    articleName = currentFilePath.substring(currentFilePath.lastIndexOf('/') + 1) || 'Unknown Document';
+                  }
+                  await ClipService.addClip(promptText, articleName);
+                  ToastAndroid.show('Clipped as Text!', ToastAndroid.SHORT);
+                  const { PluginManager } = require('sn-plugin-lib');
+                  PluginManager.closePluginView();
+                }}
+              >
+                <Text style={styles.modalButtonTextSecondary}>Clip Text</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonCancel]}
+                onPress={async () => {
+                  setShowPromptDialog(false);
+                  await ClipService.setPromptText('');
+                  const { PluginManager } = require('sn-plugin-lib');
+                  PluginManager.closePluginView();
+                }}
+              >
+                <Text style={styles.modalButtonTextCancel}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
@@ -202,10 +923,11 @@ export default function App() {
             </View>
             <Text style={styles.title}>Clipper</Text>
             <View style={styles.headerIcons}>
-              <Pressable onPress={toggleSearch} style={styles.iconButton}>
+
+              <Pressable onPress={toggleSearch} style={styles.iconButton} testID="search-btn">
                 <Image source={require('../assets/icon/search.png')} style={styles.iconImage} />
               </Pressable>
-              <Pressable onPress={() => setIsPopoverOpen(!isPopoverOpen)} style={styles.iconButton}>
+              <Pressable onPress={() => setIsPopoverOpen(true)} style={styles.iconButton} testID="filter-btn">
                 <Image source={require('../assets/icon/filter.png')} style={styles.iconImage} />
               </Pressable>
             </View>
@@ -257,65 +979,99 @@ export default function App() {
           </View>
         )}
 
-        {/* Scrollable Clips List */}
-        <ScrollView style={styles.scrollArea} contentContainerStyle={styles.scrollContent}>
-          {processedClips.length === 0 ? (
+        {/* Recycled FlatList representing clippings */}
+        <FlatList
+          style={styles.scrollArea}
+          contentContainerStyle={styles.scrollContent}
+          data={processedClips}
+          keyExtractor={(item) => item.id}
+          ListEmptyComponent={
             <Text style={styles.emptyText}>
               {clips.length === 0
-                ? 'No clippings aggregated yet. Underline text inside a document to begin.'
+                ? 'No clippings aggregated yet. Highlight text to begin.'
                 : 'No clippings match the search or filter query.'}
             </Text>
-          ) : (
-            processedClips.map((clip) => {
-              const isSelected = selectedIds.includes(clip.id);
-              return (
-                <Pressable
-                  key={clip.id}
-                  onPress={() => handleCardPress(clip.id)}
-                  onLongPress={() => handleCardLongPress(clip.id)}
-                  style={[
-                    styles.clipItem,
-                    isSelectionMode && styles.selectableClipItem,
-                    isSelected && styles.selectedClipItem,
-                  ]}
-                >
-                  <View style={styles.clipItemHeader}>
-                    <View style={styles.clipIndexRow}>
-                      {isSelectionMode && (
-                        <View style={[styles.checkbox, isSelected && styles.checkboxChecked]}>
-                          {isSelected && <Text style={styles.checkMark}>✓</Text>}
-                        </View>
-                      )}
-                      <Text style={styles.clipIndex}>{formatDate(clip.timestamp)}</Text>
-                    </View>
-                    <Text style={styles.articleName} numberOfLines={1}>
-                      {clip.articleName}
-                    </Text>
+          }
+          renderItem={({ item: clip }) => {
+            const isSelected = selectedIds.includes(clip.id);
+            return (
+              <Pressable
+                onPress={() => handleCardPress(clip.id)}
+                onLongPress={() => handleCardLongPress(clip.id)}
+                style={[
+                  styles.clipItem,
+                  isSelectionMode && styles.selectableClipItem,
+                  isSelected && styles.selectedClipItem,
+                ]}
+              >
+                <View style={styles.clipItemHeader}>
+                  <View style={styles.clipIndexRow}>
+                    {isSelectionMode && (
+                      <View style={[styles.checkbox, isSelected && styles.checkboxChecked]}>
+                        {isSelected && <Text style={styles.checkMark}>✓</Text>}
+                      </View>
+                    )}
+                    <Text style={styles.clipIndex}>{formatDate(clip.timestamp)}</Text>
                   </View>
-                  <Text style={styles.clipText}>{clip.text}</Text>
-                </Pressable>
-              );
-            })
-          )}
-        </ScrollView>
+                  <Text style={styles.articleName} numberOfLines={1}>
+                    {clip.articleName}
+                  </Text>
+                </View>
+                {clip.elements && clip.elements.map((elem, idx) => {
+                  if (elem.type === 'text' && elem.text) {
+                    return <Text key={idx} style={styles.clipText}>{elem.text}</Text>;
+                  } else if (elem.type === 'image' && elem.imagePath) {
+                    return (
+                      <Image
+                        key={idx}
+                        source={{ uri: 'file://' + elem.imagePath }}
+                        style={styles.clipImage}
+                      />
+                    );
+                  }
+                  return null;
+                })}
+              </Pressable>
+            );
+          }}
+        />
 
         {/* Footer Actions Area */}
         <View style={styles.footer}>
           {!isSelectionMode ? (
             <View style={styles.btnRow}>
               <HighContrastButton label="Copy Visible" onPress={handleCopyAllVisible} disabled={processedClips.length === 0} />
+              {isNoteFile && (
+                <HighContrastButton label="Insert into open Note" onPress={handleInsertVisible} disabled={processedClips.length === 0} />
+              )}
               <HighContrastButton label="Clear All" onPress={handleClearAll} disabled={clips.length === 0} />
             </View>
           ) : (
             <>
-              <View style={styles.btnRow}>
-                <HighContrastButton label="Copy Selected" onPress={handleCopySelected} />
-                <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={selectedIds.length < 2} />
-                <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
-              </View>
-              <View style={styles.btnRow}>
-                <HighContrastButton label="Cancel" onPress={handleCancel} />
-              </View>
+              {isNoteFile ? (
+                <>
+                  <View style={styles.btnRow}>
+                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} />
+                    <HighContrastButton label="Insert into open Note" onPress={handleInsertSelected} />
+                    <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={selectedIds.length < 2} />
+                  </View>
+                  <View style={styles.btnRow}>
+                    <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
+                    <HighContrastButton label="Cancel" onPress={handleCancel} />
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={styles.btnRow}>
+                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} />
+                    <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={selectedIds.length < 2} />
+                    <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
+                  </View>
+                  <View style={styles.btnRow}>
+                    <HighContrastButton label="Cancel" onPress={handleCancel} />
+                  </View>
+                </>
+              )}
             </>
           )}
         </View>
@@ -700,5 +1456,184 @@ const styles = StyleSheet.create({
   btnRow: {
     flexDirection: 'row',
     gap: 8,
+  },
+  clipImage: {
+    width: '100%',
+    height: 180,
+    resizeMode: 'contain',
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    marginTop: 6,
+    backgroundColor: '#f9f9f9',
+  },
+  textIconButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderWidth: 2,
+    borderColor: '#000000',
+    backgroundColor: '#ffffff',
+    marginRight: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerTextButton: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  cropHeader: {
+    height: 60,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    borderBottomWidth: 2,
+    borderColor: '#000000',
+    backgroundColor: '#ffffff',
+  },
+  cropTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  cropCloseButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderWidth: 2,
+    borderColor: '#000000',
+    backgroundColor: '#ffffff',
+  },
+  cropCloseText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  cropWorkspace: {
+    flex: 1,
+    backgroundColor: '#e0e0e0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cropLoadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+  },
+  cropLoadingText: {
+    fontSize: 18,
+    color: '#000000',
+  },
+  imageWrapper: {
+    width: '100%',
+    height: '100%',
+    position: 'relative',
+  },
+  cropBox: {
+    position: 'absolute',
+    borderWidth: 3,
+    borderColor: '#000000',
+    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+  },
+  cropBoxOutline: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    borderStyle: 'dashed',
+  },
+  resizeHandle: {
+    position: 'absolute',
+    right: -10,
+    bottom: -10,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 3,
+    borderColor: '#000000',
+    backgroundColor: '#ffffff',
+  },
+  cropFooter: {
+    height: 80,
+    padding: 12,
+    borderTopWidth: 2,
+    borderColor: '#000000',
+    backgroundColor: '#ffffff',
+  },
+  modalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  modalContent: {
+    width: '80%',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 3,
+    borderColor: '#000000',
+    borderRadius: 8,
+    padding: 24,
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#000000',
+    marginBottom: 16,
+  },
+  modalDescription: {
+    fontSize: 18,
+    color: '#333333',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 26,
+  },
+  modalButtons: {
+    width: '100%',
+    flexDirection: 'column',
+    gap: 12,
+  },
+  modalButton: {
+    width: '100%',
+    paddingVertical: 14,
+    borderRadius: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+  },
+  modalButtonPrimary: {
+    backgroundColor: '#000000',
+    borderColor: '#000000',
+  },
+  modalButtonSecondary: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#000000',
+  },
+  modalButtonCancel: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#666666',
+  },
+  modalButtonTextPrimary: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  modalButtonTextSecondary: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  modalButtonTextCancel: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#666666',
   },
 });

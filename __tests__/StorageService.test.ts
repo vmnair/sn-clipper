@@ -27,6 +27,7 @@ describe('StorageService', () => {
       {
         id: '1',
         text: 'Hello world',
+        elements: [{ type: 'text', text: 'Hello world' }],
         articleName: 'Test Article',
         timestamp: 12345,
       },
@@ -45,6 +46,25 @@ describe('StorageService', () => {
   it('should return empty array if no clips are stored', async () => {
     const loaded = await StorageService.loadClips();
     expect(loaded).toEqual([]);
+  });
+
+  it('should migrate legacy clips lacking elements array on load', async () => {
+    const legacyClips = [
+      {
+        id: 'legacy-id',
+        text: 'Legacy highlight text content',
+        articleName: 'Legacy Doc',
+        timestamp: 99999,
+      },
+    ];
+
+    await AsyncStorage.setItem('sn_clipper_aggregated_clips', JSON.stringify(legacyClips));
+
+    const loaded = await StorageService.loadClips();
+    expect(loaded.length).toBe(1);
+    expect(loaded[0].id).toBe('legacy-id');
+    expect(loaded[0].text).toBe('Legacy highlight text content');
+    expect(loaded[0].elements).toEqual([{ type: 'text', text: 'Legacy highlight text content' }]);
   });
 
 
