@@ -4,14 +4,11 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import {
   SafeAreaView,
-  FlatList,
-  ScrollView,
   StyleSheet,
   Text,
   View,
   ToastAndroid,
   Pressable,
-  TextInput,
   Image,
   AppState,
 } from 'react-native';
@@ -20,30 +17,15 @@ import { ClipItem } from './services/StorageService';
 import { PluginManager } from 'sn-plugin-lib';
 import { HighContrastButton } from './components/HighContrastButton';
 import { CropOverlay } from './components/CropOverlay';
+import { PromptDialog } from './components/PromptDialog';
+import { SearchBar } from './components/SearchBar';
+import { FilterPopover } from './components/FilterPopover';
+import { ClipList } from './components/ClipList';
 
 // Derive a human-readable document title from an absolute file path.
 const deriveArticleName = (filePath?: string | null): string => {
   if (!filePath) return 'Unknown Document';
   return filePath.substring(filePath.lastIndexOf('/') + 1) || 'Unknown Document';
-};
-
-const formatDate = (timestamp?: number) => {
-  if (!timestamp) return '';
-  const date = new Date(timestamp);
-  const fullMonths = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
-  ];
-  const month = fullMonths[date.getMonth()];
-  const day = date.getDate();
-  const year = date.getFullYear();
-  let hours = date.getHours();
-  const minutes = date.getMinutes();
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12;
-  hours = hours ? hours : 12;
-  const minutesStr = minutes < 10 ? '0' + minutes : minutes;
-  return `${month} ${day}, ${year} ${hours}:${minutesStr} ${ampm}`;
 };
 
 export default function App() {
@@ -120,10 +102,10 @@ export default function App() {
           return;
         }
 
-        if (launchMode !== 'prompt') {
-          setShowPromptDialog(false);
-          setPromptText('');
-        }
+        // The 'prompt' (and 'autoclipped') modes have already returned above, so here
+        // launchMode is 'normal' or 'crop': always clear any stale prompt dialog state.
+        setShowPromptDialog(false);
+        setPromptText('');
 
         if (launchMode !== 'crop') {
           setIsCropping(false);
@@ -676,35 +658,16 @@ export default function App() {
         />
 
         {selectionText !== null && (
-            <View style={styles.modalOverlay}>
-              <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Clip Selection</Text>
-                <Text style={styles.modalDescription}>
-                  You selected text. How would you like to clip this selection?
-                </Text>
-                <View style={styles.modalButtons}>
-                  <Pressable
-                    onPress={handleClipSelectionAsText}
-                    style={[styles.modalButton, styles.modalButtonPrimary]}
-                  >
-                    <Text style={styles.modalButtonTextPrimary}>Clip as Text</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={handleClipSelectionAsImage}
-                    style={[styles.modalButton, styles.modalButtonSecondary]}
-                  >
-                    <Text style={styles.modalButtonTextSecondary}>Clip as Image</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={handleCancelSelectionModal}
-                    style={[styles.modalButton, styles.modalButtonCancel]}
-                  >
-                    <Text style={styles.modalButtonTextCancel}>Cancel</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          )}
+          <PromptDialog
+            description="You selected text. How would you like to clip this selection?"
+            imageLabel="Clip as Image"
+            textLabel="Clip as Text"
+            primaryAction="text"
+            onClipImage={handleClipSelectionAsImage}
+            onClipText={handleClipSelectionAsText}
+            onCancel={handleCancelSelectionModal}
+          />
+        )}
       </View>
     );
   }
@@ -712,51 +675,31 @@ export default function App() {
   if (showPromptDialog) {
     return (
       <SafeAreaView style={styles.safeArea}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Clip Selection</Text>
-            <Text style={styles.modalDescription}>
-              How would you like to clip this selection?{"\n\n"}
-              <Text style={{ fontWeight: 'bold', fontStyle: 'italic' }}>"{promptText}"</Text>
-            </Text>
-            <View style={styles.modalButtons}>
-              <Pressable
-                style={[styles.modalButton, styles.modalButtonPrimary]}
-                onPress={async () => {
-                  setShowPromptDialog(false);
-                  await ClipService.setPromptText('');
-                  await handleStartCropping(currentFilePath || undefined, currentPageNum);
-                }}
-              >
-                <Text style={styles.modalButtonTextPrimary}>Clip Region</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.modalButton, styles.modalButtonSecondary]}
-                onPress={async () => {
-                  setShowPromptDialog(false);
-                  await ClipService.setPromptText('');
-                  await ClipService.addClip(promptText, deriveArticleName(currentFilePath));
-                  ToastAndroid.show('Clipped as Text!', ToastAndroid.SHORT);
-                  const { PluginManager } = require('sn-plugin-lib');
-                  PluginManager.closePluginView();
-                }}
-              >
-                <Text style={styles.modalButtonTextSecondary}>Clip Text</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.modalButton, styles.modalButtonCancel]}
-                onPress={async () => {
-                  setShowPromptDialog(false);
-                  await ClipService.setPromptText('');
-                  const { PluginManager } = require('sn-plugin-lib');
-                  PluginManager.closePluginView();
-                }}
-              >
-                <Text style={styles.modalButtonTextCancel}>Cancel</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
+        <PromptDialog
+          text={promptText}
+          imageLabel="Clip Region"
+          textLabel="Clip Text"
+          primaryAction="image"
+          onClipImage={async () => {
+            setShowPromptDialog(false);
+            await ClipService.setPromptText('');
+            await handleStartCropping(currentFilePath || undefined, currentPageNum);
+          }}
+          onClipText={async () => {
+            setShowPromptDialog(false);
+            await ClipService.setPromptText('');
+            await ClipService.addClip(promptText, deriveArticleName(currentFilePath));
+            ToastAndroid.show('Clipped as Text!', ToastAndroid.SHORT);
+            const { PluginManager } = require('sn-plugin-lib');
+            PluginManager.closePluginView();
+          }}
+          onCancel={async () => {
+            setShowPromptDialog(false);
+            await ClipService.setPromptText('');
+            const { PluginManager } = require('sn-plugin-lib');
+            PluginManager.closePluginView();
+          }}
+        />
       </SafeAreaView>
     );
   }
@@ -817,75 +760,21 @@ export default function App() {
 
         {/* Toggleable Search Bar */}
         {isSearchVisible && (
-          <View style={styles.searchBar}>
-            <TextInput
-              style={styles.searchInput}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Search clippings..."
-              placeholderTextColor="#888888"
-            />
-            <Pressable onPress={() => setSearchQuery('')} style={styles.searchClearBtn}>
-              <Image source={require('../assets/icon/clear.png')} style={styles.searchClearImage} />
-            </Pressable>
-          </View>
+          <SearchBar
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            onClear={() => setSearchQuery('')}
+          />
         )}
 
-        {/* Recycled FlatList representing clippings */}
-        <FlatList
-          style={styles.scrollArea}
-          contentContainerStyle={styles.scrollContent}
+        {/* Scrollable list of clippings */}
+        <ClipList
           data={processedClips}
-          keyExtractor={(item) => item.id}
-          ListEmptyComponent={
-            <Text style={styles.emptyText}>
-              {clips.length === 0
-                ? 'No clippings aggregated yet. Highlight text to begin.'
-                : 'No clippings match the search or filter query.'}
-            </Text>
-          }
-          renderItem={({ item: clip }) => {
-            const isSelected = selectedIds.includes(clip.id);
-            return (
-              <Pressable
-                onPress={() => handleCardPress(clip.id)}
-                onLongPress={() => handleCardLongPress(clip.id)}
-                style={[
-                  styles.clipItem,
-                  isSelectionMode && styles.selectableClipItem,
-                  isSelected && styles.selectedClipItem,
-                ]}
-              >
-                <View style={styles.clipItemHeader}>
-                  <View style={styles.clipIndexRow}>
-                    {isSelectionMode && (
-                      <View style={[styles.checkbox, isSelected && styles.checkboxChecked]}>
-                        {isSelected && <Text style={styles.checkMark}>✓</Text>}
-                      </View>
-                    )}
-                    <Text style={styles.clipIndex}>{formatDate(clip.timestamp)}</Text>
-                  </View>
-                  <Text style={styles.articleName} numberOfLines={1}>
-                    {clip.articleName}
-                  </Text>
-                </View>
-                {clip.elements && clip.elements.map((elem, idx) => {
-                  if (elem.type === 'text' && elem.text) {
-                    return <Text key={idx} style={styles.clipText}>{elem.text}</Text>;
-                  } else if (elem.type === 'image' && elem.imagePath) {
-                    return (
-                      <Image
-                        key={idx}
-                        source={{ uri: 'file://' + elem.imagePath }}
-                        style={styles.clipImage}
-                      />
-                    );
-                  }
-                  return null;
-                })}
-              </Pressable>
-            );
-          }}
+          totalCount={clips.length}
+          selectedIds={selectedIds}
+          isSelectionMode={isSelectionMode}
+          onCardPress={handleCardPress}
+          onCardLongPress={handleCardLongPress}
         />
 
         {/* Footer Actions Area */}
@@ -931,93 +820,20 @@ export default function App() {
 
       {/* Local Filter & Sort Popover Menu */}
       {isPopoverOpen && (
-        <>
-          <Pressable style={styles.backdrop} onPress={() => setIsPopoverOpen(false)} />
-          <Pressable style={styles.popover} onPress={() => {}}>
-            {/* Pointing Triangle */}
-            <View style={styles.popoverArrow} />
-            
-            {/* Sort Order Section (Pinned Top) */}
-            <Text style={styles.popoverSectionHeader}>Sort Order</Text>
-            <Pressable
-              onPress={() => {
-                setActiveSortMode('newest');
-                setIsPopoverOpen(false);
-              }}
-              style={styles.popoverRow}
-            >
-              <Text style={styles.popoverRowLabel}>Newest First</Text>
-              {activeSortMode === 'newest' ? (
-                <View style={styles.popoverCheckedBadge}>
-                  <Text style={styles.popoverCheckMark}>✓</Text>
-                </View>
-              ) : (
-                <View style={styles.popoverEmptyBadge} />
-              )}
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                setActiveSortMode('oldest');
-                setIsPopoverOpen(false);
-              }}
-              style={styles.popoverRow}
-            >
-              <Text style={styles.popoverRowLabel}>Oldest First</Text>
-              {activeSortMode === 'oldest' ? (
-                <View style={styles.popoverCheckedBadge}>
-                  <Text style={styles.popoverCheckMark}>✓</Text>
-                </View>
-              ) : (
-                <View style={styles.popoverEmptyBadge} />
-              )}
-            </Pressable>
-
-            <View style={styles.popoverDivider} />
-
-            {/* Filter by Source Section (Scrollable Bottom) */}
-            <Text style={styles.popoverSectionHeader}>Filter by Source</Text>
-            <ScrollView style={styles.popoverScroll} nestedScrollEnabled={true}>
-              <Pressable
-                onPress={() => {
-                  setActiveSourceFilter(null);
-                  setIsPopoverOpen(false);
-                }}
-                style={styles.popoverRow}
-              >
-                <Text style={styles.popoverRowLabel} numberOfLines={1}>All Sources</Text>
-                {activeSourceFilter === null ? (
-                  <View style={styles.popoverCheckedBadge}>
-                    <Text style={styles.popoverCheckMark}>✓</Text>
-                  </View>
-                ) : (
-                  <View style={styles.popoverEmptyBadge} />
-                )}
-              </Pressable>
-
-              {uniqueSources.map((source) => (
-                <Pressable
-                  key={source}
-                  onPress={() => {
-                    setActiveSourceFilter(source);
-                    setIsPopoverOpen(false);
-                  }}
-                  style={styles.popoverRow}
-                >
-                  <Text style={styles.popoverRowLabel} numberOfLines={1}>
-                    {source}
-                  </Text>
-                  {activeSourceFilter === source ? (
-                    <View style={styles.popoverCheckedBadge}>
-                      <Text style={styles.popoverCheckMark}>✓</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.popoverEmptyBadge} />
-                  )}
-                </Pressable>
-              ))}
-            </ScrollView>
-          </Pressable>
-        </>
+        <FilterPopover
+          sortMode={activeSortMode}
+          onSortChange={(mode) => {
+            setActiveSortMode(mode);
+            setIsPopoverOpen(false);
+          }}
+          activeSourceFilter={activeSourceFilter}
+          sources={uniqueSources}
+          onSourceChange={(source) => {
+            setActiveSourceFilter(source);
+            setIsPopoverOpen(false);
+          }}
+          onClose={() => setIsPopoverOpen(false)}
+        />
       )}
     </SafeAreaView>
   );
@@ -1121,186 +937,6 @@ const styles = StyleSheet.create({
     height: 12,
     tintColor: '#ffffff',
   },
-  searchBar: {
-    flexDirection: 'row',
-    borderWidth: 2,
-    borderColor: '#000000',
-    marginBottom: 12,
-    height: 48,
-    alignItems: 'center',
-  },
-  searchInput: {
-    flex: 1,
-    paddingHorizontal: 12,
-    fontSize: 18,
-    color: '#000000',
-  },
-  searchClearBtn: {
-    paddingHorizontal: 12,
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  searchClearImage: {
-    width: 18,
-    height: 18,
-    tintColor: '#000000',
-  },
-  backdrop: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0)',
-    zIndex: 998,
-  },
-  popover: {
-    position: 'absolute',
-    top: 100,
-    right: 16,
-    width: 432,
-    borderWidth: 2,
-    borderColor: '#000000',
-    backgroundColor: '#ffffff',
-    zIndex: 999,
-    padding: 12,
-  },
-  popoverArrow: {
-    position: 'absolute',
-    top: -7,
-    right: 26,
-    width: 12,
-    height: 12,
-    backgroundColor: '#ffffff',
-    borderLeftWidth: 2,
-    borderTopWidth: 2,
-    borderColor: '#000000',
-    transform: [{ rotate: '45deg' }],
-    zIndex: 1000,
-  },
-  popoverSectionHeader: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#666666',
-    marginBottom: 8,
-  },
-  popoverRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    minHeight: 48,
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-  },
-  popoverRowLabel: {
-    fontSize: 18,
-    color: '#000000',
-    maxWidth: '80%',
-  },
-  popoverCheckedBadge: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#000000',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  popoverEmptyBadge: {
-    width: 20,
-    height: 20,
-  },
-  popoverCheckMark: {
-    color: '#ffffff',
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  popoverDivider: {
-    height: 1,
-    backgroundColor: '#000000',
-    marginVertical: 10,
-  },
-  popoverScroll: {
-    maxHeight: 176, // scrollable area for documents
-  },
-
-  scrollArea: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#000000',
-    marginBottom: 16,
-  },
-  scrollContent: {
-    padding: 12,
-    gap: 12,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontStyle: 'italic',
-    color: '#666666',
-    textAlign: 'center',
-    marginTop: 40,
-  },
-  clipItem: {
-    borderWidth: 1,
-    borderColor: '#cccccc',
-    padding: 12,
-    backgroundColor: '#ffffff',
-  },
-  selectableClipItem: {
-    borderColor: '#888888',
-  },
-  selectedClipItem: {
-    borderWidth: 3,
-    borderColor: '#000000',
-  },
-  clipItemHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: '#eeeeee',
-    paddingBottom: 6,
-    marginBottom: 8,
-  },
-  clipIndexRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexShrink: 1,
-    gap: 8,
-  },
-  checkbox: {
-    width: 20,
-    height: 20,
-    borderWidth: 2,
-    borderColor: '#000000',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  checkboxChecked: {
-    backgroundColor: '#000000',
-  },
-  checkMark: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  clipIndex: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#000000',
-  },
-  articleName: {
-    fontSize: 14,
-    color: '#666666',
-    fontStyle: 'italic',
-    maxWidth: '45%',
-  },
-  clipText: {
-    fontSize: 18,
-    color: '#000000',
-    lineHeight: 26,
-  },
   footer: {
     flexDirection: 'column',
     gap: 8,
@@ -1309,106 +945,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
-  clipImage: {
-    width: '100%',
-    height: 180,
-    resizeMode: 'contain',
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    marginTop: 6,
-    backgroundColor: '#f9f9f9',
-  },
-  textIconButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderWidth: 2,
-    borderColor: '#000000',
-    backgroundColor: '#ffffff',
-    marginRight: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerTextButton: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#000000',
-  },
   // Root wrapper for crop mode: holds the CropOverlay plus the (absolute) selection modal.
   cropRoot: {
     flex: 1,
     backgroundColor: '#ffffff',
-  },
-  modalOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 1000,
-  },
-  modalContent: {
-    width: '80%',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 3,
-    borderColor: '#000000',
-    borderRadius: 8,
-    padding: 24,
-    alignItems: 'center',
-  },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#000000',
-    marginBottom: 16,
-  },
-  modalDescription: {
-    fontSize: 18,
-    color: '#333333',
-    textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 26,
-  },
-  modalButtons: {
-    width: '100%',
-    flexDirection: 'column',
-    gap: 12,
-  },
-  modalButton: {
-    width: '100%',
-    paddingVertical: 14,
-    borderRadius: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-  },
-  modalButtonPrimary: {
-    backgroundColor: '#000000',
-    borderColor: '#000000',
-  },
-  modalButtonSecondary: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#000000',
-  },
-  modalButtonCancel: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#666666',
-  },
-  modalButtonTextPrimary: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  modalButtonTextSecondary: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#000000',
-  },
-  modalButtonTextCancel: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#666666',
   },
 });
