@@ -343,9 +343,14 @@ export default function App() {
       const tempPath = `${pluginDir}/temp_crop_page_${Date.now()}.png`;
       const isNote = file.endsWith('.note') || file.endsWith('.not') || !file.includes('.');
 
+      // EPUB/TXT/FB2 reader returns 1-based page numbers, but SDK APIs expect 0-based indices.
+      const ext = file.substring(file.lastIndexOf('.')).toLowerCase();
+      const isReflowable = ['.epub', '.txt', '.fb2'].includes(ext);
+      const adjustedPage = isReflowable ? Math.max(0, pg - 1) : pg;
+
       // Fetch the page size once and reuse it for both the capture and the crop scaling.
       let pageSize = { width: 1404, height: 1872 };
-      const sizeRes = await PluginFileAPI.getPageSize(file, pg);
+      const sizeRes = await PluginFileAPI.getPageSize(file, adjustedPage);
       if (sizeRes.success && sizeRes.result) {
         pageSize = sizeRes.result;
       }
@@ -354,7 +359,7 @@ export default function App() {
       if (isNote) {
         const genRes = await PluginFileAPI.generateNotePng({
           notePath: file,
-          page: pg,
+          page: adjustedPage,
           times: 1,
           pngPath: tempPath,
           type: 1
@@ -363,7 +368,7 @@ export default function App() {
       } else {
         const genRes = await PluginDocAPI.generateDocImage(
           file,
-          pg,
+          adjustedPage,
           tempPath,
           pageSize
         );

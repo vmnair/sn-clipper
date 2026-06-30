@@ -708,4 +708,39 @@ describe('App Component', () => {
     const workspace = root.root.find((el) => typeof el.props.onLayout === 'function');
     expect(workspace).toBeTruthy();
   });
+
+  it('adjusts EPUB page number from 1-based to 0-based in crop flow', async () => {
+    const { PluginCommAPI, PluginDocAPI } = require('sn-plugin-lib');
+
+    // Mock an EPUB file path and page number 5 (which is 1-based in EPUB reader)
+    jest.spyOn(PluginCommAPI, 'getCurrentFilePath').mockResolvedValue({
+      success: true,
+      result: '/sdcard/Books/MyBook.epub',
+    });
+    jest.spyOn(PluginCommAPI, 'getCurrentPageNum').mockResolvedValue({
+      success: true,
+      result: 5,
+    });
+
+    const root = await renderApp();
+
+    // Click the capture button
+    const captureBtn = root.root.findByProps({ testID: 'capture-btn' });
+    await act(async () => {
+      captureBtn.props.onPress();
+    });
+
+    // Flush the async page capture inside handleStartCropping
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // Verify generateDocImage was called with page index 4 (5 - 1)
+    expect(PluginDocAPI.generateDocImage).toHaveBeenCalledWith(
+      '/sdcard/Books/MyBook.epub',
+      4,
+      expect.any(String),
+      expect.any(Object)
+    );
+  });
 });
