@@ -554,6 +554,26 @@ describe('App Component', () => {
     expect(titleText).toBeTruthy();
   });
 
+  it('shows the header capture button when a page is open and enters crop on press', async () => {
+    // Default mock provides a currentFilePath, so the capture button should render.
+    const root = await renderApp();
+
+    const captureBtn = root.root.findByProps({ testID: 'capture-btn' });
+    expect(captureBtn).toBeTruthy();
+
+    await act(async () => {
+      captureBtn.props.onPress();
+    });
+    // Flush the async page capture inside handleStartCropping.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // Crop workspace should now be mounted (the only element with onLayout).
+    const workspace = root.root.find((el) => typeof el.props.onLayout === 'function');
+    expect(workspace).toBeTruthy();
+  });
+
   it('handles sorting options, chips clearing, empty list, and crop cancel', async () => {
     // 1. Empty list rendering
     const rootEmpty = await renderApp();

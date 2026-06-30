@@ -21,6 +21,9 @@ import { PromptDialog } from './components/PromptDialog';
 import { SearchBar } from './components/SearchBar';
 import { FilterPopover } from './components/FilterPopover';
 import { ClipList } from './components/ClipList';
+// Bundled at build time; versionCode is auto-incremented by buildPlugin.sh before bundling.
+const pluginConfig = require('../PluginConfig.json');
+const BUILD_LABEL = `v${pluginConfig.versionName} (build ${pluginConfig.versionCode})`;
 
 // Derive a human-readable document title from an absolute file path.
 const deriveArticleName = (filePath?: string | null): string => {
@@ -320,7 +323,13 @@ export default function App() {
     }
     setIsCropping(true);
     setCropLoading(true);
-    
+
+    // Drop any capture left over from a previous aborted session before making a new one.
+    if (cropPagePath) {
+      const { FileUtils } = require('sn-plugin-lib');
+      FileUtils.deleteFile(cropPagePath).catch(() => {});
+    }
+
     try {
       const { PluginFileAPI, PluginDocAPI } = require('sn-plugin-lib');
       const pluginDir = await PluginManager.getPluginDirPath();
@@ -427,7 +436,15 @@ export default function App() {
 
   const handleCancelCropping = () => {
     setIsCropping(false);
-    const { PluginManager } = require('sn-plugin-lib');
+    // Don't leave the full-page capture (potentially sensitive document content) on disk
+    // when the user abandons the crop.
+    if (cropPagePath) {
+      const { FileUtils } = require('sn-plugin-lib');
+      FileUtils.deleteFile(cropPagePath).catch((err: any) =>
+        console.error('Failed to delete temp crop page on cancel:', err)
+      );
+      setCropPagePath(null);
+    }
     PluginManager.closePluginView();
   };
 
@@ -719,6 +736,15 @@ export default function App() {
             <Text style={styles.title}>Clipper</Text>
             <View style={styles.headerIcons}>
 
+              {currentFilePath && (
+                <Pressable
+                  onPress={() => handleStartCropping(currentFilePath || undefined, currentPageNum)}
+                  style={styles.iconButton}
+                  testID="capture-btn"
+                >
+                  <Image source={require('../assets/icon/clip_image_icon.png')} style={styles.iconImage} />
+                </Pressable>
+              )}
               <Pressable onPress={toggleSearch} style={styles.iconButton} testID="search-btn">
                 <Image source={require('../assets/icon/search.png')} style={styles.iconImage} />
               </Pressable>
@@ -816,6 +842,8 @@ export default function App() {
             </>
           )}
         </View>
+
+        <Text style={styles.buildLabel}>{BUILD_LABEL}</Text>
       </View>
 
       {/* Local Filter & Sort Popover Menu */}
@@ -949,5 +977,11 @@ const styles = StyleSheet.create({
   cropRoot: {
     flex: 1,
     backgroundColor: '#ffffff',
+  },
+  buildLabel: {
+    fontSize: 12,
+    color: '#666666',
+    textAlign: 'right',
+    marginTop: 6,
   },
 });
