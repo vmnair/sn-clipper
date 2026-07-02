@@ -4,6 +4,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.Arguments
 import android.graphics.BitmapRegionDecoder
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -225,5 +226,39 @@ class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     @ReactMethod
     fun getPromptText(promise: Promise) {
         promise.resolve(promptText)
+    }
+
+    // Capture the current on-screen framebuffer to a PNG and return { path, width,
+    // height }. Works because the plugin host process runs as android.uid.system
+    // (uid 1000), which can read the framebuffer via the platform `screencap`
+    // binary — a normal third-party app cannot. This is the basis of the WYSIWYG
+    // reader-page capture (crisp, at the user's font) used for reflowable EPUBs.
+    @ReactMethod
+    fun captureScreen(destPath: String, promise: Promise) {
+        try {
+            val clean = if (destPath.startsWith("file://")) destPath.substring(7) else destPath
+            File(clean).parentFile?.mkdirs()
+            // Passed as a fixed String[] (no shell) so the path is never interpreted —
+            // no command injection. With a FILENAME arg, `screencap` writes the PNG to
+            // that file and produces no stdout, so waitFor() can't block on an undrained
+            // stdout pipe (verified empirically across many captures).
+            val p = Runtime.getRuntime().exec(arrayOf("screencap", "-p", clean))
+            val exit = p.waitFor()
+            val f = File(clean)
+            if (exit == 0 && f.exists() && f.length() > 0L) {
+                val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(clean, o)
+                val map = Arguments.createMap()
+                map.putString("path", clean)
+                map.putInt("width", o.outWidth)
+                map.putInt("height", o.outHeight)
+                promise.resolve(map)
+            } else {
+                val err = try { p.errorStream.bufferedReader().readText() } catch (e: Exception) { "" }
+                promise.reject("SCREENCAP_FAILED", "exit=$exit len=${f.length()} err=$err")
+            }
+        } catch (e: Exception) {
+            promise.reject("SCREENCAP_ERROR", e.message, e)
+        }
     }
 }

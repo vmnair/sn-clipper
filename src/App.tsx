@@ -1,7 +1,7 @@
 // SnClipper/src/app.tsx
 // Vinod Nair
 
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
   SafeAreaView,
   StyleSheet,
@@ -54,6 +54,16 @@ export default function App() {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [showPromptDialog, setShowPromptDialog] = useState(false);
   const [promptText, setPromptText] = useState('');
+
+  // A plugin button press (e.g. the reader's selection-popup "Clip" entry) fires
+  // while the reader page is still on screen, so we screenshot it right then. The
+  // crop flow prefers this crisp, WYSIWYG capture over generateDocImage — which is
+  // essential for reflowable EPUB, whose re-rendered pagination never matches the
+  // reader. Holds { promise, ts }; consumed once by handleStartCropping.
+  const pendingReaderShot = useRef<{ promise: Promise<any>; ts: number; path: string } | null>(null);
+  // Cached plugin dir so the button-press listener can build the shot path without
+  // an async round-trip that would delay the capture.
+  const pluginDirRef = useRef<string | null>(null);
 
   useEffect(() => {
     // Sync current list from Storage on open
@@ -167,6 +177,10 @@ export default function App() {
       ImageCropModule.registerAsForeground().catch((err: any) => console.error(err));
     }
 
+    // Cache the plugin dir up front so the button-press listener can screenshot
+    // without an async round-trip (which would let the reader be covered first).
+    PluginManager.getPluginDirPath().then((dir: string | null | undefined) => { if (dir) pluginDirRef.current = dir; }).catch(() => {});
+
     let subscription: any = null;
     if (DeviceEventEmitter && typeof DeviceEventEmitter.addListener === 'function') {
       subscription = DeviceEventEmitter.addListener('onLaunchModeChange', (mode: string) => {
@@ -176,11 +190,40 @@ export default function App() {
       });
     }
 
+    // When any plugin button is pressed the reader page is still on screen, so grab
+    // a screenshot of it immediately. The crop flow (handleStartCropping) consumes
+    // this for a crisp, WYSIWYG capture instead of re-rendering via generateDocImage
+    // (which mis-paginates reflowable EPUB). Store the promise so the crop can await
+    // the capture rather than race it.
+    let btnSub: any = null;
+    try {
+      btnSub = PluginManager.registerButtonListener({
+        onButtonPress: () => {
+          const dir = pluginDirRef.current;
+          if (dir && ImageCropModule && typeof ImageCropModule.captureScreen === 'function') {
+            // Delete the previous unconsumed capture so presses that don't lead to a
+            // crop don't accumulate orphaned full-screen PNGs.
+            const prev = pendingReaderShot.current;
+            if (prev && prev.path) {
+              try { require('sn-plugin-lib').FileUtils.deleteFile(prev.path).catch(() => {}); } catch (e) {}
+            }
+            // Unique filename per capture: RN/Fresco caches images by URI, so a fixed
+            // path would keep showing the previously cached page after switching docs.
+            const path = `${dir}/reader_shot_${Date.now()}.png`;
+            pendingReaderShot.current = { promise: ImageCropModule.captureScreen(path), ts: Date.now(), path };
+          }
+        },
+      } as any);
+    } catch (e) { console.log('registerButtonListener failed', e); }
+
     return () => {
       unsubscribe();
       appStateSub.remove();
       if (subscription) {
         subscription.remove();
+      }
+      if (btnSub && typeof btnSub.remove === 'function') {
+        btnSub.remove();
       }
     };
   }, []);
@@ -323,6 +366,28 @@ export default function App() {
     }
     setIsCropping(true);
     setCropLoading(true);
+
+    // Prefer a fresh reader screenshot taken when the user pressed the selection
+    // "Clip" button — it's the exact, crisp page (correct font, WYSIWYG) and works
+    // for reflowable EPUB where generateDocImage mis-paginates. Falls through to the
+    // re-render path only if no recent capture is available or it fails.
+    const shot = pendingReaderShot.current;
+    pendingReaderShot.current = null;
+    if (shot) {
+      if (Date.now() - shot.ts < 30000) {
+        try {
+          const cap = await shot.promise;
+          if (cap && cap.path && cap.width && cap.height) {
+            setCropPagePath(cap.path);
+            setCropImageSize({ width: cap.width, height: cap.height });
+            setCropLoading(false);
+            return;
+          }
+        } catch (e) { /* fall through to generateDocImage */ }
+      }
+      // Shot was stale or unusable — delete the abandoned capture so it doesn't linger.
+      try { const { FileUtils } = require('sn-plugin-lib'); FileUtils.deleteFile(shot.path).catch(() => {}); } catch (e) {}
+    }
 
     // Drop any capture left over from a previous aborted session before making a new one.
     if (cropPagePath) {
@@ -735,16 +800,10 @@ export default function App() {
             </View>
             <Text style={styles.title}>Clipper</Text>
             <View style={styles.headerIcons}>
-
-              {currentFilePath && (
-                <Pressable
-                  onPress={() => handleStartCropping(currentFilePath || undefined, currentPageNum)}
-                  style={styles.iconButton}
-                  testID="capture-btn"
-                >
-                  <Image source={require('../assets/icon/clip_image_icon.png')} style={styles.iconImage} />
-                </Pressable>
-              )}
+              {/* Region capture is done from the reader: highlight text → the "Clip"
+                  entry in the selection popup. That path screenshots the live reader
+                  page (crisp, correct for EPUB); an in-Clipper button cannot (the
+                  reader isn't on screen) so it was removed. */}
               <Pressable onPress={toggleSearch} style={styles.iconButton} testID="search-btn">
                 <Image source={require('../assets/icon/search.png')} style={styles.iconImage} />
               </Pressable>
