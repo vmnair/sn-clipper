@@ -271,5 +271,99 @@ describe('ClipService', () => {
 
       expect(ClipService.getClipsSync().length).toBe(0);
     });
+
+    it('carries over the remainder text of a split element (count 0)', async () => {
+      const mockClips = [
+        {
+          id: 'long',
+          text: 'First half. Second half.',
+          elements: [{ type: 'text', text: 'First half. Second half.' }],
+          articleName: 'Doc A.pdf',
+          timestamp: 100,
+        },
+      ];
+      jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+      await ClipService.init();
+
+      // The first chunk was inserted; only the remainder should survive.
+      await ClipService.trimInsertedElements('long', 0, 'Second half.');
+
+      const clips = ClipService.getClipsSync();
+      expect(clips.length).toBe(1);
+      expect(clips[0].elements).toEqual([{ type: 'text', text: 'Second half.' }]);
+      expect(clips[0].text).toBe('Second half.');
+    });
+  });
+
+  describe('unmergeClip', () => {
+    it('explodes a multi-element clip into one clip per element, in order', async () => {
+      const mockClips = [
+        {
+          id: 'merged',
+          text: 'A\n​\nC',
+          elements: [
+            { type: 'text', text: 'A' },
+            { type: 'image', imagePath: '/p/b.png', width: 100, height: 80 },
+            { type: 'text', text: 'C' },
+          ],
+          articleName: 'Doc A / Doc B',
+          timestamp: 500,
+        },
+        { id: 'other', text: 'Z', elements: [{ type: 'text', text: 'Z' }], articleName: 'Doc Z', timestamp: 600 },
+      ];
+      jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+      await ClipService.init();
+
+      const pieces = await ClipService.unmergeClip('merged');
+      expect(pieces).toBe(3);
+
+      const clips = ClipService.getClipsSync();
+      // 3 pieces replace the merged clip in place, 'other' remains → 4 total.
+      expect(clips.length).toBe(4);
+      const exploded = clips.slice(0, 3);
+      expect(exploded.map(c => c.elements)).toEqual([
+        [{ type: 'text', text: 'A' }],
+        [{ type: 'image', imagePath: '/p/b.png', width: 100, height: 80 }],
+        [{ type: 'text', text: 'C' }],
+      ]);
+      // Order preserved via ascending timestamps.
+      expect(exploded[0].timestamp).toBeLessThan(exploded[1].timestamp);
+      expect(exploded[1].timestamp).toBeLessThan(exploded[2].timestamp);
+      expect(clips[3].id).toBe('other');
+    });
+
+    it('generates unique ids for the exploded pieces', async () => {
+      const mockClips = [
+        {
+          id: 'merged',
+          text: 'a\n\nb\n\nc',
+          elements: [
+            { type: 'text', text: 'a' },
+            { type: 'text', text: 'b' },
+            { type: 'text', text: 'c' },
+          ],
+          articleName: 'Doc A',
+          timestamp: 100,
+        },
+      ];
+      jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+      await ClipService.init();
+
+      await ClipService.unmergeClip('merged');
+      const ids = ClipService.getClipsSync().map((c) => c.id);
+      expect(new Set(ids).size).toBe(ids.length); // all unique
+    });
+
+    it('is a no-op for a single-element clip', async () => {
+      const mockClips = [
+        { id: 'solo', text: 'A', elements: [{ type: 'text', text: 'A' }], articleName: 'Doc A', timestamp: 100 },
+      ];
+      jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+      await ClipService.init();
+
+      const pieces = await ClipService.unmergeClip('solo');
+      expect(pieces).toBe(0);
+      expect(ClipService.getClipsSync().length).toBe(1);
+    });
   });
 });

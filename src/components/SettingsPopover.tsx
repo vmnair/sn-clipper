@@ -6,12 +6,23 @@
 
 import React from 'react';
 import { StyleSheet, Text, View, Pressable } from 'react-native';
+import { INSERT_FONT_SIZES } from '../services/StorageService';
 
 interface SettingsPopoverProps {
   autoRemoveInserted: boolean;
   onAutoRemoveChange: (value: boolean) => void;
+  combineInserted: boolean;
+  onCombineChange: (value: boolean) => void;
+  insertFontSize: number;
+  onInsertFontSizeChange: (size: number) => void;
   onClose: () => void;
 }
+
+const FONT_OPTIONS: { label: string; size: number }[] = [
+  { label: 'Small', size: INSERT_FONT_SIZES.small },
+  { label: 'Medium', size: INSERT_FONT_SIZES.medium },
+  { label: 'Large', size: INSERT_FONT_SIZES.large },
+];
 
 // Right-aligned circular badge: filled check when on, blank otherwise.
 function Badge({ selected }: { selected: boolean }) {
@@ -27,6 +38,10 @@ function Badge({ selected }: { selected: boolean }) {
 export function SettingsPopover({
   autoRemoveInserted,
   onAutoRemoveChange,
+  combineInserted,
+  onCombineChange,
+  insertFontSize,
+  onInsertFontSizeChange,
   onClose,
 }: SettingsPopoverProps) {
   return (
@@ -48,6 +63,33 @@ export function SettingsPopover({
           </View>
           <Badge selected={autoRemoveInserted} />
         </Pressable>
+
+        <Pressable
+          onPress={() => onCombineChange(!combineInserted)}
+          style={styles.popoverRow}
+          testID="setting-combine"
+        >
+          <View style={styles.popoverLabelBlock}>
+            <Text style={styles.popoverRowLabel}>Combine inserted text</Text>
+            <Text style={styles.popoverRowHint}>Insert clips as one text block</Text>
+          </View>
+          <Badge selected={combineInserted} />
+        </Pressable>
+
+        <View style={styles.popoverDivider} />
+
+        <Text style={styles.popoverSectionHeader}>Inserted text size</Text>
+        {FONT_OPTIONS.map((opt) => (
+          <Pressable
+            key={opt.size}
+            onPress={() => onInsertFontSizeChange(opt.size)}
+            style={styles.popoverRow}
+            testID={`setting-font-${opt.label.toLowerCase()}`}
+          >
+            <Text style={styles.popoverRowLabel}>{opt.label}</Text>
+            <Badge selected={insertFontSize === opt.size} />
+          </Pressable>
+        ))}
       </Pressable>
     </>
   );
@@ -92,6 +134,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#666666',
     marginBottom: 8,
+  },
+  popoverDivider: {
+    height: 1,
+    backgroundColor: '#000000',
+    marginVertical: 10,
   },
   popoverRow: {
     flexDirection: 'row',

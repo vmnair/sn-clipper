@@ -13,7 +13,7 @@ import {
   AppState,
 } from 'react-native';
 import { ClipService } from './services/ClipService';
-import { ClipItem, StorageService } from './services/StorageService';
+import { ClipItem, StorageService, DEFAULT_INSERT_FONT_SIZE } from './services/StorageService';
 import { PluginManager } from 'sn-plugin-lib';
 import { HighContrastButton } from './components/HighContrastButton';
 import { CropOverlay } from './components/CropOverlay';
@@ -23,6 +23,7 @@ import { FilterPopover } from './components/FilterPopover';
 import { SettingsPopover } from './components/SettingsPopover';
 import { ClipList } from './components/ClipList';
 import { deriveArticleName, isDocFile } from './utils/paths';
+import { splitTextToFit } from './utils/text';
 // Bundled at build time; versionCode is auto-incremented by buildPlugin.sh before bundling.
 const pluginConfig = require('../PluginConfig.json');
 const BUILD_LABEL = `v${pluginConfig.versionName} (build ${pluginConfig.versionCode})`;
@@ -74,6 +75,10 @@ async function sweepOrphanCaptures(): Promise<void> {
   } catch (e) { /* best-effort */ }
 }
 
+// True when a clip contains an image element (a figure). Figures lay out and select
+// differently from text (their own page; not copyable or mergeable).
+const clipHasImage = (clip: ClipItem): boolean => !!clip.elements?.some((e) => e.type === 'image');
+
 export default function App() {
   const [clips, setClips] = useState<ClipItem[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -102,6 +107,10 @@ export default function App() {
   // Settings (persisted). Auto-remove: delete clips from Clipper once they have
   // been successfully inserted into a note. Defaults on.
   const [autoRemoveInserted, setAutoRemoveInserted] = useState(true);
+  // Font size (px) for text inserted into notes. Defaults to Medium (44).
+  const [insertFontSize, setInsertFontSize] = useState<number>(DEFAULT_INSERT_FONT_SIZE);
+  // Combine inserted text clips into a single text box (default on).
+  const [combineInserted, setCombineInserted] = useState(true);
 
   // A plugin button press (e.g. the reader's selection-popup "Clip" entry) fires
   // while the reader page is still on screen, so we screenshot it right then. The
@@ -123,6 +132,8 @@ export default function App() {
 
     // Load persisted settings
     StorageService.getAutoRemoveInserted().then(setAutoRemoveInserted);
+    StorageService.getInsertFontSize().then(setInsertFontSize);
+    StorageService.getCombineInserted().then(setCombineInserted);
 
     // Check active file context (Note vs Document)
     const runContextCheck = async () => {
@@ -354,9 +365,22 @@ export default function App() {
     if (updated.includes(id)) {
       updated = updated.filter((item) => item !== id);
     } else {
+      // A figure can only be selected on its own (it inserts alone on its own page, and can't
+      // be copied or merged), so figures and text never mix in a selection.
+      const addingClip = clips.find((c) => c.id === id);
+      const addingImage = addingClip ? clipHasImage(addingClip) : false;
+      const selectionHasImageNow = clips.some((c) => selectedIds.includes(c.id) && clipHasImage(c));
+      if (addingImage && selectedIds.length > 0) {
+        ToastAndroid.show('A figure can only be selected on its own.', ToastAndroid.SHORT);
+        return;
+      }
+      if (!addingImage && selectionHasImageNow) {
+        ToastAndroid.show('Deselect the figure to select text.', ToastAndroid.SHORT);
+        return;
+      }
       updated.push(id);
     }
-    
+
     setSelectedIds(updated);
     if (updated.length === 0) {
       setIsSelectionMode(false);
@@ -392,9 +416,21 @@ export default function App() {
     handleCancel();
   };
 
+  // A selection is mergeable only when it's 2+ clips that are ALL text (no images) — a page
+  // can't lay out an image alongside text, so text+image clips are disallowed.
+  const selectionHasImage = useMemo(
+    () => clips.some((c) => selectedIds.includes(c.id) && clipHasImage(c)),
+    [clips, selectedIds]
+  );
+  const canMerge = selectedIds.length >= 2 && !selectionHasImage;
+
   const handleMergeSelected = async () => {
     if (selectedIds.length < 2) {
       ToastAndroid.show('Select at least 2 clips to merge!', ToastAndroid.SHORT);
+      return;
+    }
+    if (selectionHasImage) {
+      ToastAndroid.show('Only text clips can be merged.', ToastAndroid.SHORT);
       return;
     }
     try {
@@ -404,6 +440,26 @@ export default function App() {
     } catch (e: any) {
       ToastAndroid.show(`Merge failed: ${e.message}`, ToastAndroid.SHORT);
     }
+  };
+
+  // Number of selected clips that are actually merged (have >1 element) and can be unmerged.
+  const unmergeableCount = useMemo(
+    () => clips.filter((c) => selectedIds.includes(c.id) && c.elements && c.elements.length > 1).length,
+    [clips, selectedIds]
+  );
+
+  const handleUnmergeSelected = async () => {
+    const targets = clips.filter((c) => selectedIds.includes(c.id) && c.elements && c.elements.length > 1);
+    if (targets.length === 0) {
+      ToastAndroid.show('Select a merged clip to unmerge.', ToastAndroid.SHORT);
+      return;
+    }
+    let pieces = 0;
+    for (const c of targets) {
+      pieces += await ClipService.unmergeClip(c.id);
+    }
+    ToastAndroid.show(`Unmerged into ${pieces} clip(s).`, ToastAndroid.SHORT);
+    handleCancel();
   };
 
   const handleClearAll = async () => {
@@ -656,7 +712,14 @@ export default function App() {
       // and snapshot their ids so we can identify newly-inserted images afterwards
       // (insertImage returns { result: true } with no uuid, so we diff before/after).
       let currentY = 100;
-      const margin = 30;
+      // Layout metrics derived from the chosen insert font size. lineHeight/charsPerLine
+      // ESTIMATE how much text fits (fit/split decisions and where the next box starts).
+      // Uniform inter-clip spacing comes from combining text into ONE box separated by a
+      // blank line (see the combine branch) rather than from precise height estimates; `gap`
+      // is the blank space between separately-inserted boxes (~0.6 line).
+      const fontSize = insertFontSize;
+      const lineHeight = Math.round(fontSize * 1.35);
+      const gap = Math.round(lineHeight * 0.6);
       const beforeIds = new Set<string>();
       // Count images already on this page (from a previous insert) so the one-figure-per-page
       // cap accounts for them — otherwise a second figure would overlap the existing one.
@@ -691,101 +754,154 @@ export default function App() {
       }
       // Start slightly below the bottom-most element
       if (currentY > 100) {
-        currentY += margin;
+        currentY += gap;
       }
 
-      // Flatten clips into elements, tagging each with its clip id so we can tell which
-      // clips were fully inserted (and safe to remove) vs. deferred for lack of space.
-      const allElements: { clipId: string; type: 'text' | 'image'; text?: string; imagePath?: string }[] = [];
-      for (const clip of clipsToInsert) {
-        for (const el of clip.elements) allElements.push({ clipId: clip.id, ...el });
-      }
-
-      // Helper function to load image size
-      const getImgSize = (elem: any) => new Promise<{ width: number; height: number }>((resolve) => {
-        if (elem.width && elem.height) {
-          resolve({ width: elem.width, height: elem.height });
-          return;
-        }
-        Image.getSize(
-          'file://' + elem.imagePath,
-          (w, h) => resolve({ width: w, height: h }),
-          () => resolve({ width: 600, height: 300 }) // fallback to 2:1 ratio (600 width, 300 height)
-        );
-      });
-
-      // Pre-calculate per-element layout box (width + height), used for placement and
-      // fit checks. Images keep their NATIVE pixel size, only scaled DOWN if wider than
-      // the usable page width — never upscaled (upscaling a small crop to full width made
-      // it huge and pushed everything off the page).
-      const maxWidth = pageWidth - 200;
-      const elementLayouts: { clipId: string; type: 'text' | 'image'; text?: string; imagePath?: string; layoutWidth: number; layoutHeight: number }[] = [];
-      for (const elem of allElements) {
-        if (elem.type === 'text' && elem.text) {
-          const charsPerLine = Math.floor(maxWidth / 24) || 25;
-          const lineCount = Math.ceil(elem.text.length / charsPerLine);
-          const estimatedHeight = Math.max(100, lineCount * 60 + 20);
-          elementLayouts.push({ ...elem, layoutWidth: maxWidth, layoutHeight: estimatedHeight });
-        } else if (elem.type === 'image' && elem.imagePath) {
-          const { width: imgW, height: imgH } = await getImgSize(elem);
-          const layoutWidth = Math.min(maxWidth, imgW);
-          const layoutHeight = Math.round(layoutWidth * (imgH / imgW));
-          elementLayouts.push({ ...elem, layoutWidth, layoutHeight });
-        }
-      }
-
-      // Insert elements top-to-bottom until the page runs out of room. Text is positioned
-      // via its textRect and stacks correctly; images are centered by the SDK (see below).
+      // Flatten clips into an ordered list of element "items", tagging each with its clip id
+      // so we can tell which clips were fully inserted (safe to remove) vs. deferred.
+      const items: { clipId: string; type: 'text' | 'image'; text?: string; imagePath?: string }[] = [];
       const elemCountByClip: Record<string, number> = {};
-      const insertedCountByClip: Record<string, number> = {};
-      allElements.forEach((e) => { elemCountByClip[e.clipId] = (elemCountByClip[e.clipId] || 0) + 1; });
-      let outOfSpace = false;
-      // The SDK centers every inserted image and offers no way to reposition, so two images
-      // on one page would overlap. Restrict to one figure per page: stop before a second
-      // image, counting any image already on the page from a prior insert.
-      let imagesInserted = existingImageCount;
-      let imageLimitHit = false;
-
-      for (const elem of elementLayouts) {
-        // Only one figure per page — defer any further images to the next insert.
-        if (elem.type === 'image' && imagesInserted >= 1) { imageLimitHit = true; break; }
-        // Stop before placing anything below the bottom of the page.
-        if (currentY + elem.layoutHeight > pageHeight - margin) { outOfSpace = true; break; }
-        const rect = { left: 100, top: currentY, right: 100 + elem.layoutWidth, bottom: currentY + elem.layoutHeight };
-        if (elem.type === 'text' && elem.text) {
-          await PluginNoteAPI.insertText({
-            textContentFull: elem.text,
-            textRect: rect,
-            fontSize: 44,
-            textAlign: 0,
-            textBold: 0,
-            textItalics: 0,
-            textFrameWidthType: 0,
-            textFrameStyle: 0,
-            textEditable: 1,
-          });
-        } else if (elem.type === 'image' && elem.imagePath) {
-          // The SDK places inserted images at the page center and offers no supported way
-          // to reposition them from a plugin (modifyElements→105 unbind, insertElements→106
-          // invalid params) until Ratta exposes a positioning API. Two images would overlap
-          // at center, so we cap insertion at one figure per page (see the image-limit break
-          // above). Save after EACH image; a single batched save persists only the last one.
-          await PluginNoteAPI.insertImage(elem.imagePath);
-          await PluginNoteAPI.saveCurrentNote();
-          imagesInserted++;
+      for (const clip of clipsToInsert) {
+        for (const el of clip.elements) {
+          items.push({ clipId: clip.id, type: el.type, text: el.text, imagePath: el.imagePath });
+          elemCountByClip[clip.id] = (elemCountByClip[clip.id] || 0) + 1;
         }
-        currentY += elem.layoutHeight + margin;
-        insertedCountByClip[elem.clipId] = (insertedCountByClip[elem.clipId] || 0) + 1;
-        await new Promise(r => setTimeout(r, 300));
+      }
+
+      const maxWidth = pageWidth - 200;
+      // Approx characters per line for the chosen font (proportional font ~0.55·fontSize wide).
+      const charsPerLine = Math.max(1, Math.floor(maxWidth / (fontSize * 0.55)));
+      const estimateTextHeight = (t: string) => Math.max(1, Math.ceil((t || '').length / charsPerLine)) * lineHeight;
+      const insertTextBox = async (content: string, top: number, height: number) => {
+        await PluginNoteAPI.insertText({
+          textContentFull: content,
+          textRect: { left: 100, top, right: 100 + maxWidth, bottom: top + height },
+          fontSize,
+          textAlign: 0,
+          textBold: 0,
+          textItalics: 0,
+          textFrameWidthType: 0,
+          textFrameStyle: 0,
+          textEditable: 1,
+        });
+      };
+
+      const insertedCountByClip: Record<string, number> = {};
+      const splitRemainder: Record<string, string> = {}; // clipId -> un-inserted tail of a split clip
+      const MIN_SPLIT_LINES = 3;
+      let imagesInserted = existingImageCount;
+      let outOfSpace = false;    // text didn't fit; more on the next page
+      let imageLimitHit = false; // a figure was deferred (needs its own empty page)
+      let splitOccurred = false; // a single clip was split across pages
+      let attemptedInserts = 0;
+      // A figure is always alone on its page (the SDK centers images and can't reposition
+      // them, so text would overlap). Once a page has any content, a figure is deferred.
+      let pageHasContent = currentY > 100 || existingImageCount > 0;
+
+      let i = 0;
+      while (i < items.length) {
+        const item = items[i];
+
+        if (item.type === 'image') {
+          if (pageHasContent || imagesInserted >= 1) { imageLimitHit = true; break; }
+          if (item.imagePath) {
+            await PluginNoteAPI.insertImage(item.imagePath);
+            await PluginNoteAPI.saveCurrentNote();
+            imagesInserted++;
+            attemptedInserts++;
+            insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
+            pageHasContent = true;
+            await new Promise(r => setTimeout(r, 300));
+            i++;
+          } else {
+            i++;
+          }
+          // The figure owns the page; whatever remains continues on the next page.
+          if (i < items.length) {
+            if (items[i].type === 'image') imageLimitHit = true;
+            else outOfSpace = true;
+          }
+          break;
+        }
+
+        // Empty/whitespace-only text elements carry no content — count them as "inserted"
+        // (so their clip can still be removed) but don't create a blank text box for them.
+        if (!item.text || !item.text.trim()) { insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1; i++; continue; }
+
+        const availHeight = (pageHeight - gap) - currentY;
+
+        if (combineInserted) {
+          // Combine consecutive whole text items that fit into a single text box, separated
+          // by one blank line. Spacing is then a literal blank line — uniform, not dependent
+          // on the (fixed-height-box) height estimate.
+          const group: typeof items = [];
+          let groupHeight = 0;
+          let j = i;
+          while (j < items.length && items[j].type === 'text' && items[j].text) {
+            const h = estimateTextHeight(items[j].text as string);
+            const addH = h + (group.length ? lineHeight : 0); // blank line between clips
+            if (group.length === 0) {
+              if (h > availHeight) break; // first item alone doesn't fit → split/defer below
+            } else if (groupHeight + addH > availHeight) {
+              break;
+            }
+            group.push(items[j]);
+            groupHeight += addH;
+            j++;
+          }
+          if (group.length > 0) {
+            const combined = group.map((g) => g.text).join('\n\n');
+            await insertTextBox(combined, currentY, groupHeight);
+            attemptedInserts++;
+            group.forEach((g) => { insertedCountByClip[g.clipId] = (insertedCountByClip[g.clipId] || 0) + 1; });
+            currentY += groupHeight + gap;
+            pageHasContent = true;
+            i = j;
+            await new Promise(r => setTimeout(r, 300));
+            // One combined box per page: whatever remains continues on the next page.
+            if (i < items.length) {
+              if (items[i].type === 'image') imageLimitHit = true; // figure needs its own page
+              else outOfSpace = true;
+            }
+            break;
+          }
+          // group empty → the single item is taller than the remaining space; fall through.
+        }
+
+        // Single text item: fits whole, or split across pages, or defer to a fresh page.
+        const t = item.text;
+        const estH = estimateTextHeight(t);
+        if (estH <= availHeight) {
+          await insertTextBox(t, currentY, estH);
+          attemptedInserts++;
+          insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
+          currentY += estH + gap;
+          pageHasContent = true;
+          i++;
+          await new Promise(r => setTimeout(r, 300));
+          if (combineInserted) break; // combine handles multi-item via the group; be safe
+          continue; // separate mode: keep stacking boxes on this page
+        } else {
+          const linesThatFit = Math.floor(availHeight / lineHeight);
+          if (linesThatFit < MIN_SPLIT_LINES) { outOfSpace = true; break; } // start fresh next page
+          const charBudget = linesThatFit * charsPerLine;
+          const [chunk, remainder] = splitTextToFit(t, charBudget);
+          if (!chunk) { outOfSpace = true; break; }
+          await insertTextBox(chunk, currentY, linesThatFit * lineHeight);
+          attemptedInserts++;
+          if (remainder) { splitRemainder[item.clipId] = remainder; splitOccurred = true; }
+          await PluginNoteAPI.saveCurrentNote();
+          await new Promise(r => setTimeout(r, 300));
+          break; // page full
+        }
       }
 
       // Persist any remaining (text) inserts. Images were saved individually above.
       await PluginNoteAPI.saveCurrentNote();
 
-      // Verify how many new elements actually persisted, so we NEVER delete a clip whose
-      // content didn't land in the note (image inserts can silently drop).
+      // Verify how many new elements actually persisted, so we NEVER remove clip content
+      // that didn't land in the note (image inserts can silently drop).
       let persistedNew = 0;
-      const attemptedElems = Object.values(insertedCountByClip).reduce((a: number, b: number) => a + b, 0);
       try {
         const verify = await PluginFileAPI.getElements(page, notePath) as any;
         if (verify && verify.success && Array.isArray(verify.result)) {
@@ -793,38 +909,50 @@ export default function App() {
         }
       } catch (e) { /* best-effort */ }
 
-      const allPersisted = attemptedElems > 0 && persistedNew >= attemptedElems;
+      const allPersisted = attemptedInserts > 0 && persistedNew >= attemptedInserts;
       if (allPersisted && autoRemoveInserted) {
-        // Only now is it safe to remove inserted content from Clipper.
-        const fullyInsertedIds = clipsToInsert
-          .filter((c) => insertedCountByClip[c.id] === elemCountByClip[c.id])
-          .map((c) => c.id);
-        if (fullyInsertedIds.length > 0) await ClipService.deleteClips(fullyInsertedIds);
-
-        // A clip whose later elements were deferred (one-figure cap / out of space) is only
-        // partially inserted: trim off the elements that DID land so re-inserting the rest
-        // doesn't duplicate them. (Elements insert in order and the loop breaks once, so the
-        // inserted ones are always the leading prefix.)
+        // Now it's safe to remove inserted content from Clipper. Per clip:
+        //  - split: drop the fully-inserted leading elements and keep only the un-inserted
+        //    tail of the split text element (so re-inserting continues, not duplicates);
+        //  - fully inserted: delete;
+        //  - partially inserted (later elements deferred): trim the inserted leading prefix.
+        const fullyInsertedIds: string[] = [];
         for (const c of clipsToInsert) {
           const inserted = insertedCountByClip[c.id] || 0;
           const total = elemCountByClip[c.id] || 0;
-          if (inserted > 0 && inserted < total) {
+          const remainder = splitRemainder[c.id];
+          if (remainder) {
+            await ClipService.trimInsertedElements(c.id, inserted, remainder);
+          } else if (total > 0 && inserted === total) {
+            fullyInsertedIds.push(c.id);
+          } else if (inserted > 0) {
             await ClipService.trimInsertedElements(c.id, inserted);
           }
         }
+        if (fullyInsertedIds.length > 0) await ClipService.deleteClips(fullyInsertedIds);
       }
 
-      if (outOfSpace) {
+      if (splitOccurred) {
         ToastAndroid.show(
-          'Not enough space on this page. Add a new page in the note, then insert the remaining clips.',
+          'Clip too long for one page — inserted part. Turn to a new page, then Insert again to continue.',
           ToastAndroid.LONG
         );
+        // Return to the note so the user can add a page for the remainder.
+        PluginManager.closePluginView();
+      } else if (outOfSpace) {
+        // Covers "text filled the page" and "a figure was placed and more clips remain" —
+        // either way the rest continues on a new page, so return to the note to navigate.
+        ToastAndroid.show(
+          'More clips remain. Turn to a new page, then Insert again to continue.',
+          ToastAndroid.LONG
+        );
+        PluginManager.closePluginView();
       } else if (imageLimitHit) {
         // Checked before the generic persist failure: when the only remaining content is a
         // deferred image, nothing is attempted (attemptedElems === 0 → allPersisted false),
         // which would otherwise mis-report as a persistence failure.
         ToastAndroid.show(
-          'Only one figure per page. Add a new page, then insert the next figure.',
+          'Figures go on their own page. Turn to a blank page, then Insert to place the figure.',
           ToastAndroid.LONG
         );
         // Return to the note so the user can add a page for the remaining figure(s).
@@ -996,23 +1124,25 @@ export default function App() {
               {isNoteFile ? (
                 <>
                   <View style={styles.btnRow}>
-                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} />
+                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={selectionHasImage} />
                     <HighContrastButton label="Insert into open Note" onPress={handleInsertSelected} />
-                    <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={selectedIds.length < 2} />
+                    <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
                   </View>
                   <View style={styles.btnRow}>
                     <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
+                    <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
                     <HighContrastButton label="Cancel" onPress={handleCancel} />
                   </View>
                 </>
               ) : (
                 <>
                   <View style={styles.btnRow}>
-                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} />
-                    <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={selectedIds.length < 2} />
+                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={selectionHasImage} />
+                    <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
                     <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
                   </View>
                   <View style={styles.btnRow}>
+                    <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
                     <HighContrastButton label="Cancel" onPress={handleCancel} />
                   </View>
                 </>
@@ -1049,6 +1179,16 @@ export default function App() {
           onAutoRemoveChange={(value) => {
             setAutoRemoveInserted(value);
             StorageService.setAutoRemoveInserted(value);
+          }}
+          combineInserted={combineInserted}
+          onCombineChange={(value) => {
+            setCombineInserted(value);
+            StorageService.setCombineInserted(value);
+          }}
+          insertFontSize={insertFontSize}
+          onInsertFontSizeChange={(size) => {
+            setInsertFontSize(size);
+            StorageService.setInsertFontSize(size);
           }}
           onClose={() => setIsSettingsOpen(false)}
         />

@@ -10,6 +10,16 @@ export class ClipService {
   private static listeners: (() => void)[] = [];
   private static initPromise: Promise<void> | null = null;
   private static initialized: boolean = false;
+  private static idCounter: number = 0;
+
+  /**
+   * Generate a unique clip id. Combines the timestamp, a monotonic counter (guarantees
+   * uniqueness even for many ids created in the same millisecond, e.g. unmerging in a loop),
+   * and a random suffix.
+   */
+  private static genId(): string {
+    return `${Date.now().toString(36)}-${(this.idCounter++).toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
 
   /**
    * Ensure service is initialized before performing any operations.
@@ -93,7 +103,7 @@ export class ClipService {
       .trim();
 
     const newClip: ClipItem = {
-      id: Date.now().toString() + Math.random().toString(36).substring(2, 6),
+      id: this.genId(),
       text: cleanedText,
       elements: [{ type: 'text', text: cleanedText }],
       articleName: articleName.trim() || 'Unknown Document',
@@ -120,7 +130,7 @@ export class ClipService {
     }
 
     const newClip: ClipItem = {
-      id: Date.now().toString() + Math.random().toString(36).substring(2, 6),
+      id: this.genId(),
       text: '', // Pure image clip starts with empty text description
       elements: [{ type: 'image', imagePath, width, height }],
       articleName: articleName.trim() || 'Unknown Document',
@@ -171,18 +181,23 @@ export class ClipService {
   }
 
   /**
-   * Remove the first `count` sub-elements from a clip after they have been successfully
-   * inserted into a note, leaving only the not-yet-inserted remainder. Used when an insert
-   * is partial (e.g. the one-figure-per-page cap or running out of page space defers a
-   * clip's later elements) so re-inserting doesn't duplicate the already-placed content.
-   * The backing image files of the removed elements are deleted; if nothing remains the
-   * whole clip is removed.
+   * Apply the result of a partial insert to a clip so re-inserting continues where it left
+   * off instead of duplicating already-placed content:
+   *   - `count` leading sub-elements were fully inserted → remove them (deleting any backing
+   *     image files).
+   *   - `remainderText` (optional) is the un-inserted tail of the NEXT element, which is a
+   *     text element that was split across pages; its text is replaced with the remainder so
+   *     the next insert resumes from there.
+   * If nothing remains, the whole clip is removed. Used by the one-figure-per-page cap,
+   * out-of-space breaks, and long-clip auto-split.
    */
-  static async trimInsertedElements(clipId: string, count: number): Promise<void> {
+  static async trimInsertedElements(clipId: string, count: number, remainderText?: string): Promise<void> {
     await this.init();
     const clip = this.clips.find(c => c.id === clipId);
-    if (!clip || count <= 0) return;
-    if (count >= clip.elements.length) {
+    if (!clip) return;
+    const hasRemainder = typeof remainderText === 'string' && remainderText.length > 0;
+    if (count <= 0 && !hasRemainder) return;
+    if (!hasRemainder && count >= clip.elements.length) {
       await this.deleteClips([clipId]);
       return;
     }
@@ -199,7 +214,17 @@ export class ClipService {
       }
     }
 
-    clip.elements = clip.elements.slice(count);
+    let remaining = clip.elements.slice(count);
+    if (hasRemainder && remaining.length > 0 && remaining[0].type === 'text') {
+      // The first surviving element is the split text element; keep only its un-inserted tail.
+      remaining = [{ ...remaining[0], text: remainderText }, ...remaining.slice(1)];
+    }
+    if (remaining.length === 0) {
+      await this.deleteClips([clipId]);
+      return;
+    }
+
+    clip.elements = remaining;
     // Recompute the flat text (search/copy/backward-compat) from the remaining text elements.
     clip.text = clip.elements
       .filter(e => e.type === 'text' && e.text)
@@ -209,6 +234,36 @@ export class ClipService {
     await StorageService.saveClips(this.clips);
     await this.updateButton();
     this.notifyListeners();
+  }
+
+  /**
+   * Unmerge a clip into its individual sub-elements: each element becomes its own clip
+   * (text element → text clip, image element → image clip), preserving the source name and
+   * order. A clip with a single element is left unchanged. This is the inverse of merge at
+   * element granularity (original merge boundaries aren't stored), letting the user break a
+   * clip that is too large to insert back into insertable pieces.
+   */
+  static async unmergeClip(clipId: string): Promise<number> {
+    await this.init();
+    const idx = this.clips.findIndex(c => c.id === clipId);
+    if (idx === -1) return 0;
+    const clip = this.clips[idx];
+    if (!clip.elements || clip.elements.length <= 1) return 0;
+
+    const baseTs = clip.timestamp;
+    const pieces: ClipItem[] = clip.elements.map((el, i) => ({
+      id: this.genId(),
+      text: el.type === 'text' ? (el.text || '') : '',
+      elements: [{ ...el }],
+      articleName: clip.articleName,
+      timestamp: baseTs + i, // preserve order within the list
+    }));
+
+    this.clips.splice(idx, 1, ...pieces);
+    await StorageService.saveClips(this.clips);
+    await this.updateButton();
+    this.notifyListeners();
+    return pieces.length;
   }
 
   /**

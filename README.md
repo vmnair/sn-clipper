@@ -27,12 +27,19 @@ Use this plugin at your own risk. I do not make any warranty.
   your clippings with their source document.
 - **Dynamic badge count**: The sidebar button shows the current clip count (e.g. `Clipper (5)`).
 - **Search & filter**: Search clippings or filter by source document.
-- **Select, merge & delete**: Long-press to enter selection mode; merge multiple clippings
-  into one, or delete them.
-- **Insert into a note**: Paste the aggregated clips into your open note. Text stacks in
-  place; images are inserted one figure per page (add a page to insert the next figure).
-- **Settings**: A gear icon opens settings. "Remove clips after inserting" (on by default)
-  controls whether inserted clips are removed from Clipper or kept.
+- **Select, merge, unmerge & delete**: Long-press to enter selection mode. Merge multiple
+  **text** clips into one, **Unmerge** a merged clip back into its pieces, or delete. (A
+  figure can only be selected on its own; text and figures aren't merged together.)
+- **Insert into a note**: Insert your clips into the open note. Text clips are combined into
+  a single block (uniform spacing); a clip too long for one page is split at a sentence
+  boundary and continued on the next page; each figure is placed alone on its own page.
+  Clipper inserts onto the page you're currently viewing — when more remains, turn to a new
+  page and Insert again.
+- **Settings**: A gear icon opens settings:
+  - **Remove clips after inserting** (on) — delete clips from Clipper once inserted, or keep them.
+  - **Combine inserted text** (on) — insert text clips as one block, or as separate boxes
+    (separate boxes are easier to select/move individually in the note).
+  - **Inserted text size** — Small / Medium / Large font for inserted text.
 
 ---
 
@@ -63,12 +70,17 @@ The region is stored as an image clip.
 While in a document or note, open the plugins menu and tap **Clipper**.
 
 ### 4. Managing clippings
-- **Copy**: Copy the visible or selected clips (combined) to the system clipboard.
-- **Insert into open Note**: Paste the clips into your active note (only when editing a note).
-- **Merge**: In selection mode, merge two or more clips into one.
+- **Copy**: Copy the visible or selected clips (text, combined) to the system clipboard.
+  (Copy is disabled for a figure — an image can't be placed on the text clipboard.)
+- **Insert into open Note**: Insert clips into your active note (only when editing a note).
+  Text combines into one block; a very long clip continues on the next page; a figure takes
+  its own page. Turn to a new page and Insert again to continue when prompted.
+- **Merge / Unmerge**: In selection mode, merge two or more **text** clips into one, or
+  Unmerge a merged clip back into its individual pieces.
 - **Search / Filter**: Search by keyword or filter by source document.
 - **Delete / Clear All**: Delete selected clips or clear everything.
-- **Settings**: Tap the gear icon to toggle whether clips are removed after being inserted.
+- **Settings**: Tap the gear icon for: remove-clips-after-inserting, combine-inserted-text,
+  and inserted-text size.
 
 ---
 
@@ -77,8 +89,11 @@ While in a document or note, open the plugins menu and tap **Clipper**.
 - **Region capture** relies on capturing the live reader view via the plugin host's system
   privileges. This is required because the SDK cannot re-render reflowable EPUB at the
   reader's font/pagination. It could be affected by a future firmware change.
-- **Images can't be positioned individually** by the plugin, so inserted figures are placed
-  one per page. Add a new page in your note to insert the next figure.
+- **Images can't be positioned individually** by the plugin (the SDK centers them), so a
+  figure is inserted alone on its own page; text is never placed on a figure's page.
+- **Inserting works on the current page only** — the plugin can't turn pages for you. When a
+  clip is split across pages or a figure needs its own page, Clipper inserts what fits, then
+  asks you to turn to a new page and Insert again to continue.
 
 ---
 

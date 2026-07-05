@@ -20,6 +20,12 @@ export interface ClipItem {
 
 const STORAGE_KEY = 'sn_clipper_aggregated_clips';
 const AUTO_REMOVE_KEY = 'clipper_auto_remove_inserted';
+const INSERT_FONT_SIZE_KEY = 'clipper_insert_font_size';
+const COMBINE_INSERTED_KEY = 'clipper_combine_inserted';
+
+// Font-size presets for inserted note text. Medium is the historical default (44).
+export const INSERT_FONT_SIZES = { small: 32, medium: 44, large: 56 } as const;
+export const DEFAULT_INSERT_FONT_SIZE = INSERT_FONT_SIZES.medium;
 
 export class StorageService {
   /**
@@ -148,6 +154,58 @@ export class StorageService {
       await AsyncStorage.setItem(AUTO_REMOVE_KEY, value ? 'true' : 'false');
     } catch (e) {
       console.error('Failed to save auto-remove setting:', e);
+    }
+  }
+
+  /**
+   * Retrieve the font size (px) used for text inserted into notes. Defaults to Medium.
+   */
+  static async getInsertFontSize(): Promise<number> {
+    try {
+      const value = await AsyncStorage.getItem(INSERT_FONT_SIZE_KEY);
+      const parsed = value ? parseInt(value, 10) : NaN;
+      // Only accept a known preset — guards against a corrupted/extreme stored value.
+      if (Object.values(INSERT_FONT_SIZES).includes(parsed as any)) return parsed;
+    } catch (e) {
+      console.error('Failed to load insert font size:', e);
+    }
+    return DEFAULT_INSERT_FONT_SIZE;
+  }
+
+  /**
+   * Persist the font size (px) used for text inserted into notes.
+   */
+  static async setInsertFontSize(size: number): Promise<void> {
+    try {
+      await AsyncStorage.setItem(INSERT_FONT_SIZE_KEY, String(size));
+    } catch (e) {
+      console.error('Failed to save insert font size:', e);
+    }
+  }
+
+  /**
+   * Whether inserted text clips are combined into a single text box (default true). When
+   * false, each clip is inserted as its own text box.
+   */
+  static async getCombineInserted(): Promise<boolean> {
+    try {
+      const value = await AsyncStorage.getItem(COMBINE_INSERTED_KEY);
+      if (value === null) return true; // default on
+      return value === 'true';
+    } catch (e) {
+      console.error('Failed to load combine-inserted setting:', e);
+    }
+    return true;
+  }
+
+  /**
+   * Persist whether inserted text clips are combined into a single text box.
+   */
+  static async setCombineInserted(value: boolean): Promise<void> {
+    try {
+      await AsyncStorage.setItem(COMBINE_INSERTED_KEY, value ? 'true' : 'false');
+    } catch (e) {
+      console.error('Failed to save combine-inserted setting:', e);
     }
   }
 }

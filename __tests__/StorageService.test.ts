@@ -80,4 +80,21 @@ describe('StorageService', () => {
     expect(await StorageService.getAutoRemoveInserted()).toBe(true);
   });
 
+  it('defaults the insert font size to 44 (Medium) when unset', async () => {
+    expect(await StorageService.getInsertFontSize()).toBe(44);
+  });
+
+  it('persists and reads back the insert font size', async () => {
+    await StorageService.setInsertFontSize(56);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('clipper_insert_font_size', '56');
+    expect(await StorageService.getInsertFontSize()).toBe(56);
+  });
+
+  it('defaults combine-inserted to on and persists changes', async () => {
+    expect(await StorageService.getCombineInserted()).toBe(true);
+    await StorageService.setCombineInserted(false);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('clipper_combine_inserted', 'false');
+    expect(await StorageService.getCombineInserted()).toBe(false);
+  });
+
 });

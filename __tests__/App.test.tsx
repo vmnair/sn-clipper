@@ -2,6 +2,7 @@ import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import App from '../src/App';
 import { ClipService } from '../src/services/ClipService';
+import { StorageService } from '../src/services/StorageService';
 import { Clipboard, ToastAndroid, Text, Pressable, TextInput } from 'react-native';
 import { PluginManager } from 'sn-plugin-lib';
 
@@ -122,6 +123,13 @@ describe('App Component', () => {
   beforeEach(async () => {
     jest.restoreAllMocks();
     jest.clearAllMocks();
+    // getElements is configured per-test with mockResolvedValue(Once); reset it to a clean
+    // empty default each time so a persistent mock from one test can't leak into the next.
+    const { PluginFileAPI } = require('sn-plugin-lib');
+    PluginFileAPI.getElements.mockReset();
+    PluginFileAPI.getElements.mockResolvedValue({ success: true, result: [] });
+    // Reset persisted settings (combine/font/auto-remove) so they don't leak between tests.
+    await require('@react-native-async-storage/async-storage').clear();
     (ClipService as any).listeners = [];
     await ClipService.clearClips();
     (ClipService as any).initialized = false;
@@ -342,48 +350,146 @@ describe('App Component', () => {
     expect(ToastAndroid.show).toHaveBeenCalledWith('2 clip(s) merged!', ToastAndroid.SHORT);
   });
 
-  it('inserts all visible clips sequentially into active note', async () => {
+  it('combines text clips into one text box (combine on by default)', async () => {
     const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     PluginFileAPI.getElements
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
+      .mockResolvedValue({ // verify: one new combined text element persisted
         success: true,
         result: [
-          {
-            type: 500,
-            textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 200 } },
-          },
-        ],
-      })
-      // Verification read: both new elements persisted (text + image, with ids).
-      .mockResolvedValueOnce({
-        success: true,
-        result: [
-          { uuid: 'mock-text-uuid', type: 500, textBox: { textRect: { left: 100, top: 230, right: 1304, bottom: 400 } } },
-          { uuid: 'mock-img-uuid', type: 200, picture: { rect: { left: 100, top: 430, right: 700, bottom: 1000 } } },
+          { uuid: 'combined-uuid', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 500 } } },
         ],
       });
 
-    await ClipService.addClip('Test highlight textbox', 'Doc A');
-    await ClipService.addImageClip('/path/to/clip.png', 'Doc A');
+    await ClipService.addClip('First clip.', 'Doc A');
+    await ClipService.addClip('Second clip.', 'Doc A');
 
     const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // One insertText call carrying both clips, separated by a blank line.
+    expect(PluginNoteAPI.insertText).toHaveBeenCalledTimes(1);
+    const content = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0].textContentFull;
+    expect(content).toBe('First clip.\n\nSecond clip.');
+    expect(ToastAndroid.show).toHaveBeenCalledWith('Clips inserted successfully!', ToastAndroid.SHORT);
+    expect(ClipService.getClipsSync().length).toBe(0); // both removed
+  });
+
+  it('inserts each text clip as its own box when combine is turned off', async () => {
+    const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({ success: true, result: [] })
+      .mockResolvedValue({
+        success: true,
+        result: [
+          { uuid: 'b1', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 200 } } },
+          { uuid: 'b2', type: 500, textBox: { textRect: { left: 100, top: 260, right: 1304, bottom: 360 } } },
+        ],
+      });
+
+    await ClipService.addClip('First clip.', 'Doc A');
+    await ClipService.addClip('Second clip.', 'Doc A');
+
+    const root = await renderApp();
+
+    // Turn combine off in settings.
+    const settingsBtn = root.root.findByProps({ testID: 'settings-btn' });
+    await act(async () => { settingsBtn.props.onPress(); });
+    const combineRow = root.root.findByProps({ testID: 'setting-combine' });
+    await act(async () => { combineRow.props.onPress(); });
 
     const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
     await act(async () => {
       await insertBtn.props.onPress();
     });
 
-    expect(PluginNoteAPI.insertText).toHaveBeenCalled();
-    expect(PluginNoteAPI.insertImage).toHaveBeenCalledWith('/path/to/clip.png');
-    expect(ToastAndroid.show).toHaveBeenCalledWith('Clips inserted successfully!', ToastAndroid.SHORT);
+    // Two separate boxes.
+    expect(PluginNoteAPI.insertText).toHaveBeenCalledTimes(2);
+  });
+
+  it('never places a figure on a page with text (figure gets its own page)', async () => {
+    const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({ success: true, result: [] })
+      .mockResolvedValue({
+        success: true,
+        result: [
+          { uuid: 'x', type: 200, picture: { rect: { left: 100, top: 100, right: 700, bottom: 700 } } },
+        ],
+      });
+
+    // Default sort is newest-first, so the image (added last) is processed first onto the
+    // empty page, alone; the text is deferred.
+    await ClipService.addClip('Some text.', 'Doc A');
+    await ClipService.addImageClip('/path/to/figure.png', 'Doc A');
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // Text and figure never share a page: exactly one of them is placed this pass, and the
+    // other is deferred (kept). (Insertion order depends on the visible sort, so assert the
+    // invariant, not which one goes first.)
+    const textCalled = (PluginNoteAPI.insertText as jest.Mock).mock.calls.length > 0;
+    const imageCalled = (PluginNoteAPI.insertImage as jest.Mock).mock.calls.length > 0;
+    expect((textCalled ? 1 : 0) + (imageCalled ? 1 : 0)).toBe(1);
+    expect(ClipService.getClipsSync().length).toBe(1); // the deferred clip is kept
+  });
+
+  it('a figure can only be selected on its own (blocks mixing with text)', async () => {
+    await ClipService.addClip('A text clip', 'Doc A');
+    await ClipService.addImageClip('/path/to/fig.png', 'Doc A');
+
+    const root = await renderApp();
+    const cards = () => root.root.findAllByType(Pressable).filter((p: any) => typeof p.props.onLongPress === 'function');
+    const textCard = cards().find((p: any) => p.findAllByType(Text).some((t: any) => t.props.children === 'A text clip'));
+    const imageCard = cards().find((p: any) => p !== textCard);
+
+    // Start selection on the text clip, then try to add the image → blocked (stays 1 text).
+    await act(async () => { textCard.props.onLongPress(); });
+    await act(async () => { imageCard.props.onPress(); });
+    const subtitle = () => root.root.findAllByType(Text).find(
+      (t: any) => typeof t.props.children === 'string' && t.props.children.includes('clip(s) selected'),
+    );
+    expect(subtitle()?.props.children).toBe('1 of 2 clip(s) selected');
+    // Selection is text-only → Copy enabled.
+    expect(root.root.findByProps({ label: 'Copy Selected' }).props.disabled).toBe(false);
+  });
+
+  it('a lone figure selection disables Copy but allows Insert', async () => {
+    await ClipService.addClip('A text clip', 'Doc A');
+    await ClipService.addImageClip('/path/to/fig.png', 'Doc A');
+
+    const root = await renderApp();
+    const cards = () => root.root.findAllByType(Pressable).filter((p: any) => typeof p.props.onLongPress === 'function');
+    const textCard = cards().find((p: any) => p.findAllByType(Text).some((t: any) => t.props.children === 'A text clip'));
+    const imageCard = cards().find((p: any) => p !== textCard);
+
+    // Select the figure alone, then try to add text → blocked (stays 1 figure).
+    await act(async () => { imageCard.props.onLongPress(); });
+    await act(async () => { textCard.props.onPress(); });
+    const subtitle = root.root.findAllByType(Text).find(
+      (t: any) => typeof t.props.children === 'string' && t.props.children.includes('clip(s) selected'),
+    );
+    expect(subtitle?.props.children).toBe('1 of 2 clip(s) selected');
+
+    expect(root.root.findByProps({ label: 'Copy Selected' }).props.disabled).toBe(true);
+    expect(root.root.findByProps({ label: 'Insert into open Note' }).props.disabled).toBeFalsy();
+    // Only the figure is selected (text was blocked), so Merge is disabled.
+    expect(root.root.findByProps({ label: 'Merge Selected' }).props.disabled).toBe(true);
   });
 
   it('inserts only one figure per page and keeps the rest in Clipper', async () => {
     const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     PluginFileAPI.getElements
       .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
-      // Verification read: the first image persisted (one new element with an id).
-      .mockResolvedValueOnce({
+      // Post-insert reads: the first image persisted (one new element with an id).
+      .mockResolvedValue({
         success: true,
         result: [
           { uuid: 'fig-a-uuid', type: 200, picture: { rect: { left: 100, top: 100, right: 700, bottom: 700 } } },
@@ -407,7 +513,7 @@ describe('App Component', () => {
     const insertedPath = (PluginNoteAPI.insertImage as jest.Mock).mock.calls[0][0];
     expect(bothPaths).toContain(insertedPath);
     expect(ToastAndroid.show).toHaveBeenCalledWith(
-      'Only one figure per page. Add a new page, then insert the next figure.',
+      'Figures go on their own page. Turn to a blank page, then Insert to place the figure.',
       ToastAndroid.LONG
     );
     // The deferred figure (the one NOT inserted) remains in Clipper; the inserted one is
@@ -416,6 +522,47 @@ describe('App Component', () => {
     expect(remaining.length).toBe(1);
     const remainingPath = remaining[0].elements.find((e) => e.type === 'image')?.imagePath;
     expect(remainingPath).toBe(bothPaths.find((p) => p !== insertedPath));
+  });
+
+  it('splits a clip too long for one page, inserting one chunk and keeping the remainder', async () => {
+    const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
+      .mockResolvedValueOnce({ // verify: the inserted chunk persisted
+        success: true,
+        result: [
+          { uuid: 'chunk-uuid', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 1700 } } },
+        ],
+      });
+
+    // ~90 sentences → well over one page of text, with clean sentence boundaries to split on.
+    const sentences = Array.from({ length: 90 }, (_, i) => `This is sentence number ${i}.`).join(' ');
+    await ClipService.addClip(sentences, 'Doc A');
+    const originalLen = ClipService.getClipsSync()[0].text.length;
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // Exactly one chunk is inserted this pass.
+    expect(PluginNoteAPI.insertText).toHaveBeenCalledTimes(1);
+    const inserted = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0].textContentFull;
+    expect(inserted.length).toBeLessThan(originalLen); // only part of the clip
+    expect(sentences.startsWith(inserted)).toBe(true); // leading chunk
+
+    expect(ToastAndroid.show).toHaveBeenCalledWith(
+      'Clip too long for one page — inserted part. Turn to a new page, then Insert again to continue.',
+      ToastAndroid.LONG
+    );
+
+    // The clip stays in Clipper, now holding only the un-inserted remainder.
+    const clips = ClipService.getClipsSync();
+    expect(clips.length).toBe(1);
+    expect(clips[0].text.length).toBeLessThan(originalLen);
+    expect(clips[0].text.length).toBeGreaterThan(0);
+    expect(sentences.endsWith(clips[0].text)).toBe(true); // remainder is the tail
   });
 
   it('defers an image when the page already has one, keeping it in Clipper', async () => {
@@ -440,7 +587,7 @@ describe('App Component', () => {
     // The page already has a figure, so the new one is deferred (never inserted) and kept.
     expect(PluginNoteAPI.insertImage).not.toHaveBeenCalled();
     expect(ToastAndroid.show).toHaveBeenCalledWith(
-      'Only one figure per page. Add a new page, then insert the next figure.',
+      'Figures go on their own page. Turn to a blank page, then Insert to place the figure.',
       ToastAndroid.LONG
     );
     expect(ClipService.getClipsSync().length).toBe(1);
@@ -470,7 +617,7 @@ describe('App Component', () => {
     // Nothing is placed off-page; the user is told to add a page instead.
     expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
     expect(ToastAndroid.show).toHaveBeenCalledWith(
-      'Not enough space on this page. Add a new page in the note, then insert the remaining clips.',
+      'More clips remain. Turn to a new page, then Insert again to continue.',
       ToastAndroid.LONG
     );
   });
@@ -502,16 +649,18 @@ describe('App Component', () => {
       await insertBtn.props.onPress();
     });
 
-    expect(PluginNoteAPI.insertText).toHaveBeenCalledWith(expect.objectContaining({
-      textRect: expect.objectContaining({ bottom: 330 })
-    }));
+    // The text must start just below the ACTIVE element (bottom 200), proving the deleted
+    // element (bottom 1500) was ignored in the starting-Y calculation.
+    const call = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0];
+    expect(call.textRect.top).toBeGreaterThanOrEqual(200);
+    expect(call.textRect.top).toBeLessThan(300);
   });
 
   it('inserts selected clips sequentially into active note', async () => {
     const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     PluginFileAPI.getElements
       .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
-      .mockResolvedValueOnce({ // verification read: the inserted text persisted
+      .mockResolvedValue({ // post-insert reads: the inserted text persisted
         success: true,
         result: [
           { uuid: 'sel-text-uuid', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 270 } } },
@@ -554,13 +703,61 @@ describe('App Component', () => {
     expect(header.length).toBeGreaterThanOrEqual(1);
     const toggleRow = root.root.findByProps({ testID: 'setting-auto-remove' });
     expect(toggleRow).toBeTruthy();
+    // Font-size preset rows are present.
+    expect(root.root.findByProps({ testID: 'setting-font-small' })).toBeTruthy();
+    expect(root.root.findByProps({ testID: 'setting-font-medium' })).toBeTruthy();
+    expect(root.root.findByProps({ testID: 'setting-font-large' })).toBeTruthy();
+  });
+
+  it('persists a chosen inserted-text font size', async () => {
+    const root = await renderApp();
+    const settingsBtn = root.root.findByProps({ testID: 'settings-btn' });
+    await act(async () => { settingsBtn.props.onPress(); });
+
+    const largeRow = root.root.findByProps({ testID: 'setting-font-large' });
+    await act(async () => { largeRow.props.onPress(); });
+
+    expect(await StorageService.getInsertFontSize()).toBe(56);
+  });
+
+  it('unmerges a merged clip back into its individual pieces', async () => {
+    const mockClips = [
+      {
+        id: 'merged',
+        text: 'Part one\n\nPart two',
+        elements: [
+          { type: 'text', text: 'Part one' },
+          { type: 'text', text: 'Part two' },
+        ],
+        articleName: 'Doc A',
+        timestamp: 100,
+      },
+    ];
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+
+    const root = await renderApp();
+
+    // Enter selection mode and select the merged clip.
+    const pressables = root.root.findAllByType(Pressable);
+    const card = pressables.find((p: any) =>
+      p.findAllByType(Text).some((t: any) => t.props.children === 'Part one')
+    );
+    await act(async () => { card.props.onLongPress(); });
+
+    const unmergeBtn = root.root.findByProps({ label: 'Unmerge' });
+    expect(unmergeBtn.props.disabled).toBe(false);
+    await act(async () => { await unmergeBtn.props.onPress(); });
+
+    const clips = ClipService.getClipsSync();
+    expect(clips.length).toBe(2);
+    expect(clips.every((c) => c.elements.length === 1)).toBe(true);
   });
 
   it('keeps inserted clips in Clipper when auto-remove is turned off', async () => {
     const { PluginFileAPI } = require('sn-plugin-lib');
     PluginFileAPI.getElements
       .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
-      .mockResolvedValueOnce({ // verification read: the inserted text persisted
+      .mockResolvedValue({ // post-insert reads: the inserted text persisted
         success: true,
         result: [
           { uuid: 'kept-text-uuid', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 270 } } },
