@@ -81,7 +81,7 @@ into a note → **settings** to tune insertion.
 
 ## 📦 Installation & Sideloading
 
-1. ⬇️ Download the latest `SnClipper.snplg` from the [Releases](https://github.com/vmnair/Supernote/releases) page.
+1. ⬇️ Download the latest `SnClipper.snplg` from the [Releases](https://github.com/vmnair/sn-clipper/releases) page.
 2. 🔌 Connect your Supernote to your computer via USB.
 3. 📁 Copy `SnClipper.snplg` into `/Supernote/MyStyle`.
 4. ⚙️ On the device, open **Settings → My Style → Sideloading** and install/update the plugin.
