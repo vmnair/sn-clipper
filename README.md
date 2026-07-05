@@ -1,110 +1,125 @@
-# Clipper
+# 📎 Clipper
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version" />
+  <img src="https://img.shields.io/badge/platform-Supernote%20(Manta)-000000" alt="platform" />
+  <img src="https://img.shields.io/badge/built%20with-React%20Native-61DAFB?logo=react&logoColor=white" alt="react native" />
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
+</p>
+
+> **Collect text & image clips from your reading — and drop them straight into your notes.**
 
 Clipper is a utility plugin for Supernote devices that lets you select and aggregate
-text **and image regions** from e-books (EPUB), documents (PDF, TXT, CBZ, FB2), and notes,
+text **and image regions** from e‑books (EPUB), documents (PDF, TXT, CBZ, FB2), and notes,
 collects them into a unified dashboard, and inserts them back into your note pages.
 
-I developed this plugin to solve a workflow problem: adding a series of selected passages
-to the Supernote `digest` app while reading. Previously this required frequently switching
-between the article being read and the digest app, which broke focus. Clipper lets you
-capture as you read and paste the aggregated result in one step.
+I built it to solve a workflow problem: adding a series of selected passages to the Supernote
+`digest` app while reading. That used to mean constantly switching between the article and the
+digest app, which broke focus. Clipper lets you **capture as you read** and **paste the
+aggregated result in one step**.
 
-I made heavy use of agentic coding tools during development.
-
-Use this plugin at your own risk. I do not make any warranty.
+> ⚠️ **Beta — use at your own risk. No warranty.** Tested on Manta (A5X2); not yet tested on Nomad.
 
 ---
 
-## Key Features
+## ✨ Features
 
-- **Highlight to clip**: Select text in a document and tap **Clip** in the selection
-  toolbar. Longer selections are saved silently as text; a short selection opens a prompt
-  so you can choose **Clip Text** or **Clip Region**.
-- **Region (image) capture**: From the selection prompt, choose **Clip Region** to frame a
-  rectangular area of the page and save it as an image clip. This captures the live reader
-  page, so it works correctly for reflowable EPUB as well as fixed-layout PDF.
-- **Clipper dashboard**: Opened from the Supernote plugins sidebar ("Clipper"); lists all
-  your clippings with their source document.
-- **Dynamic badge count**: The sidebar button shows the current clip count (e.g. `Clipper (5)`).
-- **Search & filter**: Search clippings or filter by source document.
-- **Select, merge, unmerge & delete**: Long-press to enter selection mode. Merge multiple
-  **text** clips into one, **Unmerge** a merged clip back into its pieces, or delete. (A
-  figure can only be selected on its own; text and figures aren't merged together.)
-- **Insert into a note**: Insert your clips into the open note. Text clips are combined into
-  a single block (uniform spacing); a clip too long for one page is split at a sentence
-  boundary and continued on the next page; each figure is placed alone on its own page.
-  Clipper inserts onto the page you're currently viewing — when more remains, turn to a new
-  page and Insert again.
-- **Settings**: A gear icon opens settings:
-  - **Remove clips after inserting** (on) — delete clips from Clipper once inserted, or keep them.
-  - **Combine inserted text** (on) — insert text clips as one block, or as separate boxes
-    (separate boxes are easier to select/move individually in the note).
-  - **Inserted text size** — Small / Medium / Large font for inserted text.
+Four parts: **capture** clips while reading → **manage** them in a dashboard → **insert** them
+into a note → **settings** to tune insertion.
 
----
+### ✂️ Capturing clips
 
-## Installation & Sideloading
+- 🖍️ **Highlight → Clip (text).** Select text in a document and tap **Clip** on the selection
+  toolbar. Each clip is labelled with its source file. A longer selection is saved **silently
+  as text** — no dialog, so you stay in the flow of reading.
+- 🔀 **Text vs Region prompt.** A short selection opens a prompt to pick **Clip Text** or
+  **Clip Region** (a short highlight is the natural way to "mark this spot" for a figure).
+- 🖼️ **Clip Region (image).** Choose **Clip Region**, drag to frame a rectangle, and save it as
+  an image clip. It captures the **live, on‑screen reader page**, so it reproduces exactly what
+  you see — including **reflowable EPUB** at your chosen font, not just fixed‑layout PDF.
+- 📚 **Works across formats.** Text and region clipping from **PDF, EPUB, TXT, CBZ, FB2**, and notes.
 
-To load the pre-compiled plugin onto your Supernote device:
+### 🗂️ The Clipper dashboard
 
-1. Download the latest `SnClipper.snplg` from the [Releases](https://github.com/vmnair/Supernote/releases) page.
-2. Connect your Supernote to your computer via USB.
-3. Copy `SnClipper.snplg` into `/Supernote/MyStyle`.
-4. On the device, open **Settings → My Style → Sideloading** and install/update the plugin.
-5. The plugin appears as **Clipper**.
+- 📋 **Unified clip list.** Opened from the plugins sidebar ("Clipper"); text clips show a
+  snippet, region clips show a thumbnail — each labelled with its source document.
+- 🔢 **Dynamic badge count.** The sidebar button shows the current count, e.g. `Clipper (5)`.
+- 🔍 **Search.** Filter by keyword (matches clip text and source name).
+- 🏷️ **Filter by source.** Show only clips from a chosen document.
+- ↕️ **Sort.** Newest‑first or oldest‑first.
 
----
+### 🧰 Organizing clips (selection mode)
 
-## How to Use
+- ✅ **Select.** Long‑press a clip to enter selection mode, then tap to select more.
+- 🔗 **Merge (text).** Combine two or more **text** clips into one, with their sources noted.
+- ✂️ **Unmerge.** Break a merged clip back into its individual pieces.
+- 📄 **Copy.** Copy the visible or selected clips (combined text) to the system clipboard.
+  *(Disabled for a figure — an image can't go on the text clipboard.)*
+- 🗑️ **Delete / Clear All.** Remove selected clips, or clear everything.
+- 🖼️ **Figure‑alone rule.** A figure can only be selected on its own (it inserts alone and
+  can't be copied or merged), keeping every action unambiguous.
 
-### 1. Clipping text
-Open an EPUB, PDF, or text document, select a passage, and tap **Clip** in the selection
-toolbar. A longer selection is clipped silently as text; a short selection prompts you to
-choose **Clip Text** or **Clip Region**.
+### 📝 Inserting into a note
 
-### 2. Clipping a region (image)
-On the short-selection prompt, tap **Clip Region**, frame the area you want, and save it.
-The region is stored as an image clip.
+- 🧱 **Combined text block.** Text clips are inserted as **one text box**, separated by a single
+  blank line — uniform, tidy spacing (togglable; off = a separate box per clip).
+- ✂️ **Long‑clip auto‑split.** A clip too tall for one page is split at a **sentence boundary**;
+  the rest continues on the next page.
+- 🖼️ **One figure per page.** Images are centred by the system and can't be repositioned, so each
+  figure is inserted **alone on its own page** — no overlap, and text never lands on a figure's page.
+- 📄 **Current‑page insertion.** Clipper inserts onto the page you're viewing; when more remains,
+  it inserts what fits and prompts you to **turn to a new page and Insert again**.
 
-### 3. Opening the Clipper dashboard
-While in a document or note, open the plugins menu and tap **Clipper**.
+### ⚙️ Settings (gear icon)
 
-### 4. Managing clippings
-- **Copy**: Copy the visible or selected clips (text, combined) to the system clipboard.
-  (Copy is disabled for a figure — an image can't be placed on the text clipboard.)
-- **Insert into open Note**: Insert clips into your active note (only when editing a note).
-  Text combines into one block; a very long clip continues on the next page; a figure takes
-  its own page. Turn to a new page and Insert again to continue when prompted.
-- **Merge / Unmerge**: In selection mode, merge two or more **text** clips into one, or
-  Unmerge a merged clip back into its individual pieces.
-- **Search / Filter**: Search by keyword or filter by source document.
-- **Delete / Clear All**: Delete selected clips or clear everything.
-- **Settings**: Tap the gear icon for: remove-clips-after-inserting, combine-inserted-text,
-  and inserted-text size.
+- 🧹 **Remove clips after inserting** *(default: on)* — delete clips once inserted, or keep them
+  (e.g. to insert the same set into several notes).
+- 🧱 **Combine inserted text** *(default: on)* — one block, or a separate box per clip.
+- 🔠 **Inserted text size** — **Small / Medium / Large**.
 
 ---
 
-## Notes & Limitations
+## 📦 Installation & Sideloading
 
-- **Region capture** relies on capturing the live reader view via the plugin host's system
-  privileges. This is required because the SDK cannot re-render reflowable EPUB at the
-  reader's font/pagination. It could be affected by a future firmware change.
-- **Images can't be positioned individually** by the plugin (the SDK centers them), so a
-  figure is inserted alone on its own page; text is never placed on a figure's page.
-- **Inserting works on the current page only** — the plugin can't turn pages for you. When a
-  clip is split across pages or a figure needs its own page, Clipper inserts what fits, then
-  asks you to turn to a new page and Insert again to continue.
+1. ⬇️ Download the latest `SnClipper.snplg` from the [Releases](https://github.com/vmnair/Supernote/releases) page.
+2. 🔌 Connect your Supernote to your computer via USB.
+3. 📁 Copy `SnClipper.snplg` into `/Supernote/MyStyle`.
+4. ⚙️ On the device, open **Settings → My Style → Sideloading** and install/update the plugin.
+5. ✅ The plugin appears as **Clipper**.
 
 ---
 
-## Todo
+## 🚀 Getting Started
 
-- Highlight selections in the document (currently the clipped text is not highlighted in place).
-- I have not tested this on a Nomad as I do not own one. If anyone can test on a Supernote
-  Nomad and provide feedback, I would appreciate it.
+1. **Clip while reading.** In a PDF/EPUB/text document, select text and tap **Clip**. For a
+   figure, make a short selection, choose **Clip Region**, and frame the area.
+2. **Review in the dashboard.** Open the plugins menu → **Clipper** to see, search, filter,
+   merge, or delete your clips.
+3. **Insert into a note.** Open a note, then in Clipper tap **Insert into open Note**. Text
+   flows into one block; figures land one per page. Turn to a new page and Insert again if prompted.
 
 ---
 
-## License
+## ⚠️ Notes & Limitations
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+- 🖼️ **Region capture** relies on capturing the live reader view via the plugin host's system
+  privileges — required because the SDK can't re‑render reflowable EPUB at the reader's
+  font/pagination. It could be affected by a future firmware change.
+- 📐 **Images can't be positioned individually** by the plugin (the SDK centres them), so a
+  figure is inserted alone on its own page.
+- 📄 **Inserting works on the current page only** — the plugin can't turn pages for you. When a
+  clip is split or a figure needs its own page, Clipper inserts what fits, then asks you to turn
+  to a new page and Insert again.
+
+---
+
+## 🗺️ Roadmap
+
+- ✍️ Highlight selections in the document (clipped text isn't highlighted in place yet).
+- 📱 Testing on **Nomad** — I don't own one; feedback from Nomad users is very welcome.
+
+---
+
+## 📄 License
+
+Licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
