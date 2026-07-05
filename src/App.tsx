@@ -13,23 +13,66 @@ import {
   AppState,
 } from 'react-native';
 import { ClipService } from './services/ClipService';
-import { ClipItem } from './services/StorageService';
+import { ClipItem, StorageService } from './services/StorageService';
 import { PluginManager } from 'sn-plugin-lib';
 import { HighContrastButton } from './components/HighContrastButton';
 import { CropOverlay } from './components/CropOverlay';
 import { PromptDialog } from './components/PromptDialog';
 import { SearchBar } from './components/SearchBar';
 import { FilterPopover } from './components/FilterPopover';
+import { SettingsPopover } from './components/SettingsPopover';
 import { ClipList } from './components/ClipList';
+import { deriveArticleName, isDocFile } from './utils/paths';
 // Bundled at build time; versionCode is auto-incremented by buildPlugin.sh before bundling.
 const pluginConfig = require('../PluginConfig.json');
 const BUILD_LABEL = `v${pluginConfig.versionName} (build ${pluginConfig.versionCode})`;
 
-// Derive a human-readable document title from an absolute file path.
-const deriveArticleName = (filePath?: string | null): string => {
-  if (!filePath) return 'Unknown Document';
-  return filePath.substring(filePath.lastIndexOf('/') + 1) || 'Unknown Document';
-};
+// Best-effort cleanup of transient capture PNGs orphaned by a crash. Full-screen reader
+// shots (reader_shot_*) and temp page renders (temp_crop_page_*) are consumed within
+// seconds; saved clip images (clip_*) are kept only while a clip references them. Runs once
+// on launch and only touches files older than CAPTURE_STALE_MS, so it can never race an
+// in-flight capture or a just-saved clip.
+const CAPTURE_STALE_MS = 5 * 60 * 1000;
+async function sweepOrphanCaptures(): Promise<void> {
+  try {
+    const { FileUtils } = require('sn-plugin-lib');
+    const dir = await PluginManager.getPluginDirPath();
+    if (!dir || !FileUtils || typeof FileUtils.listFiles !== 'function') return;
+    const entries = await FileUtils.listFiles(dir);
+    if (!Array.isArray(entries)) return;
+
+    const referenced = new Set<string>();
+    for (const clip of ClipService.getClipsSync()) {
+      for (const el of clip.elements) {
+        if (el.type === 'image' && el.imagePath) {
+          referenced.add(el.imagePath.substring(el.imagePath.lastIndexOf('/') + 1));
+        }
+      }
+    }
+
+    const now = Date.now();
+    for (const entry of entries) {
+      const name = entry.substring(entry.lastIndexOf('/') + 1);
+      const isReaderShot = name.startsWith('reader_shot_');
+      const isTempCrop = name.startsWith('temp_crop_page_');
+      const isClip = name.startsWith('clip_');
+      if (!isReaderShot && !isTempCrop && !isClip) continue;
+
+      const tsMatch = name.match(/(\d{10,})/); // embedded Date.now() (13 digits)
+      const ts = tsMatch ? parseInt(tsMatch[1], 10) : 0;
+      const isStale = !ts || now - ts > CAPTURE_STALE_MS;
+
+      if (isClip) {
+        if (referenced.has(name) || !isStale) continue; // keep referenced or fresh clips
+      } else if (!isStale) {
+        continue; // keep a possibly-pending fresh capture
+      }
+
+      const full = entry.startsWith('/') ? entry : `${dir}/${name}`;
+      try { await FileUtils.deleteFile(full); } catch (e) { /* best-effort */ }
+    }
+  } catch (e) { /* best-effort */ }
+}
 
 export default function App() {
   const [clips, setClips] = useState<ClipItem[]>([]);
@@ -52,8 +95,13 @@ export default function App() {
   const [activeSourceFilter, setActiveSourceFilter] = useState<string | null>(null); // null = All Sources
   const [activeSortMode, setActiveSortMode] = useState<'oldest' | 'newest'>('newest');
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showPromptDialog, setShowPromptDialog] = useState(false);
   const [promptText, setPromptText] = useState('');
+
+  // Settings (persisted). Auto-remove: delete clips from Clipper once they have
+  // been successfully inserted into a note. Defaults on.
+  const [autoRemoveInserted, setAutoRemoveInserted] = useState(true);
 
   // A plugin button press (e.g. the reader's selection-popup "Clip" entry) fires
   // while the reader page is still on screen, so we screenshot it right then. The
@@ -69,12 +117,17 @@ export default function App() {
     // Sync current list from Storage on open
     ClipService.init().then(() => {
       setClips(ClipService.getClipsSync());
+      // One-time cleanup of capture PNGs orphaned by a prior crash.
+      sweepOrphanCaptures();
     });
 
+    // Load persisted settings
+    StorageService.getAutoRemoveInserted().then(setAutoRemoveInserted);
+
     // Check active file context (Note vs Document)
-    const checkContext = async () => {
+    const runContextCheck = async () => {
       try {
-        const { PluginCommAPI, PluginFileAPI, PluginDocAPI } = require('sn-plugin-lib');
+        const { PluginCommAPI, PluginDocAPI } = require('sn-plugin-lib');
         
         const launchMode = await ClipService.getLaunchMode();
         if (launchMode === 'autoclipped') {
@@ -101,9 +154,7 @@ export default function App() {
           if (fileRes.success && fileRes.result) {
             const filePath = fileRes.result;
             setCurrentFilePath(filePath);
-            const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
-            const isDoc = ['.pdf', '.epub', '.txt', '.cbz', '.fb2'].includes(ext);
-            setIsNoteFile(!isDoc);
+            setIsNoteFile(!isDocFile(filePath));
 
             let pageNum = 0;
             const pageRes = await PluginCommAPI.getCurrentPageNum();
@@ -128,9 +179,7 @@ export default function App() {
         if (fileRes.success && fileRes.result) {
           const filePath = fileRes.result;
           setCurrentFilePath(filePath);
-          const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
-          const isDoc = ['.pdf', '.epub', '.txt', '.cbz', '.fb2'].includes(ext);
-          setIsNoteFile(!isDoc);
+          setIsNoteFile(!isDocFile(filePath));
 
           let pageNum = 0;
           const pageRes = await PluginCommAPI.getCurrentPageNum();
@@ -155,6 +204,26 @@ export default function App() {
       } catch (e) {
         console.error('Failed to query file path context:', e);
         setIsNoteFile(true);
+      }
+    };
+
+    // Coalesce overlapping context checks. Launch mode is a single shared value that is
+    // consumed read-then-reset (e.g. 'prompt' -> 'normal'); mount, AppState 'active', and
+    // the synchronous onLaunchModeChange emit can all fire near-simultaneously and race that
+    // read/reset (dropping a prompt or crop). This guard runs one check at a time and, if a
+    // trigger arrives mid-run, re-runs exactly once afterwards so no mode change is lost.
+    let contextCheckBusy = false;
+    let contextCheckPending = false;
+    const checkContext = async () => {
+      if (contextCheckBusy) { contextCheckPending = true; return; }
+      contextCheckBusy = true;
+      try {
+        do {
+          contextCheckPending = false;
+          await runContextCheck();
+        } while (contextCheckPending);
+      } finally {
+        contextCheckBusy = false;
       }
     };
     checkContext();
@@ -198,7 +267,13 @@ export default function App() {
     let btnSub: any = null;
     try {
       btnSub = PluginManager.registerButtonListener({
-        onButtonPress: () => {
+        onButtonPress: (e: any) => {
+          // Only the reader selection "Clip" entry (id 300) fires while the reader page is
+          // still visible — that's the one worth screenshotting. The SDK dispatches every
+          // button event to every listener (and replays the last event to newly-registered
+          // listeners for ~1s), so without this guard opening Clipper (id 100) would capture
+          // the plugin UI and leave orphaned PNGs. index.js owns the id-300 clip logic.
+          if (!e || e.id !== 300) return;
           const dir = pluginDirRef.current;
           if (dir && ImageCropModule && typeof ImageCropModule.captureScreen === 'function') {
             // Delete the previous unconsumed capture so presses that don't lead to a
@@ -214,7 +289,7 @@ export default function App() {
           }
         },
       } as any);
-    } catch (e) { console.log('registerButtonListener failed', e); }
+    } catch (e) { console.error('registerButtonListener failed', e); }
 
     return () => {
       unsubscribe();
@@ -577,13 +652,20 @@ export default function App() {
         pageHeight = sizeRes.result.height;
       }
 
-      // 1. Get existing page elements to calculate starting Y coordinate (Append feature)
+      // 1. Get existing page elements to calculate starting Y coordinate (Append feature),
+      // and snapshot their ids so we can identify newly-inserted images afterwards
+      // (insertImage returns { result: true } with no uuid, so we diff before/after).
       let currentY = 100;
       const margin = 30;
+      const beforeIds = new Set<string>();
+      // Count images already on this page (from a previous insert) so the one-figure-per-page
+      // cap accounts for them — otherwise a second figure would overlap the existing one.
+      let existingImageCount = 0;
 
       const elementsRes = await PluginFileAPI.getElements(page, notePath) as any;
       if (elementsRes && elementsRes.success && Array.isArray(elementsRes.result)) {
         for (const el of elementsRes.result) {
+          if (el.uuid) beforeIds.add(el.uuid);
           if (el.status !== undefined && el.status !== 0) {
             continue;
           }
@@ -593,6 +675,7 @@ export default function App() {
               elBottom = el.textBox.textRect.bottom;
             }
           } else if (el.type === 200) { // Picture/Image type
+            existingImageCount++;
             if (el.picture && el.picture.rect) {
               elBottom = el.picture.rect.bottom;
             }
@@ -604,15 +687,18 @@ export default function App() {
             currentY = elBottom;
           }
         }
+
       }
       // Start slightly below the bottom-most element
       if (currentY > 100) {
         currentY += margin;
       }
 
-      const allElements: { type: 'text' | 'image'; text?: string; imagePath?: string }[] = [];
+      // Flatten clips into elements, tagging each with its clip id so we can tell which
+      // clips were fully inserted (and safe to remove) vs. deferred for lack of space.
+      const allElements: { clipId: string; type: 'text' | 'image'; text?: string; imagePath?: string }[] = [];
       for (const clip of clipsToInsert) {
-        allElements.push(...clip.elements);
+        for (const el of clip.elements) allElements.push({ clipId: clip.id, ...el });
       }
 
       // Helper function to load image size
@@ -628,45 +714,46 @@ export default function App() {
         );
       });
 
-      // 2. Pre-calculate total height needed for selected clips
-      let totalNeededHeight = 0;
-      const elementLayouts: { type: 'text' | 'image'; text?: string; imagePath?: string; width?: number; height?: number; layoutHeight: number }[] = [];
-
+      // Pre-calculate per-element layout box (width + height), used for placement and
+      // fit checks. Images keep their NATIVE pixel size, only scaled DOWN if wider than
+      // the usable page width — never upscaled (upscaling a small crop to full width made
+      // it huge and pushed everything off the page).
+      const maxWidth = pageWidth - 200;
+      const elementLayouts: { clipId: string; type: 'text' | 'image'; text?: string; imagePath?: string; layoutWidth: number; layoutHeight: number }[] = [];
       for (const elem of allElements) {
         if (elem.type === 'text' && elem.text) {
-          const charsPerLine = Math.floor((pageWidth - 200) / 24) || 25;
+          const charsPerLine = Math.floor(maxWidth / 24) || 25;
           const lineCount = Math.ceil(elem.text.length / charsPerLine);
           const estimatedHeight = Math.max(100, lineCount * 60 + 20);
-          elementLayouts.push({ ...elem, layoutHeight: estimatedHeight });
-          totalNeededHeight += estimatedHeight + margin;
+          elementLayouts.push({ ...elem, layoutWidth: maxWidth, layoutHeight: estimatedHeight });
         } else if (elem.type === 'image' && elem.imagePath) {
           const { width: imgW, height: imgH } = await getImgSize(elem);
-          const targetW = pageWidth - 200;
-          const targetH = Math.round(targetW * (imgH / imgW));
-          elementLayouts.push({ ...elem, layoutHeight: targetH });
-          totalNeededHeight += targetH + margin;
+          const layoutWidth = Math.min(maxWidth, imgW);
+          const layoutHeight = Math.round(layoutWidth * (imgH / imgW));
+          elementLayouts.push({ ...elem, layoutWidth, layoutHeight });
         }
       }
 
-      // 3. Bounds check: warning if selected text/images do not fit (Non-blocking warning)
-      if (currentY + totalNeededHeight > pageHeight - 100) {
-        ToastAndroid.show(
-          'Warning: Selected clips may exceed page bounds.',
-          ToastAndroid.LONG
-        );
-      }
+      // Insert elements top-to-bottom until the page runs out of room. Text is positioned
+      // via its textRect and stacks correctly; images are centered by the SDK (see below).
+      const elemCountByClip: Record<string, number> = {};
+      const insertedCountByClip: Record<string, number> = {};
+      allElements.forEach((e) => { elemCountByClip[e.clipId] = (elemCountByClip[e.clipId] || 0) + 1; });
+      let outOfSpace = false;
+      // The SDK centers every inserted image and offers no way to reposition, so two images
+      // on one page would overlap. Restrict to one figure per page: stop before a second
+      // image, counting any image already on the page from a prior insert.
+      let imagesInserted = existingImageCount;
+      let imageLimitHit = false;
 
-      // 4. Sequential chronological insertion
       for (const elem of elementLayouts) {
+        // Only one figure per page — defer any further images to the next insert.
+        if (elem.type === 'image' && imagesInserted >= 1) { imageLimitHit = true; break; }
+        // Stop before placing anything below the bottom of the page.
+        if (currentY + elem.layoutHeight > pageHeight - margin) { outOfSpace = true; break; }
+        const rect = { left: 100, top: currentY, right: 100 + elem.layoutWidth, bottom: currentY + elem.layoutHeight };
         if (elem.type === 'text' && elem.text) {
-          const rect = {
-            left: 100,
-            top: currentY,
-            right: pageWidth - 100,
-            bottom: currentY + elem.layoutHeight,
-          };
-
-          const insertRes = await PluginNoteAPI.insertText({
+          await PluginNoteAPI.insertText({
             textContentFull: elem.text,
             textRect: rect,
             fontSize: 44,
@@ -677,52 +764,81 @@ export default function App() {
             textFrameStyle: 0,
             textEditable: 1,
           });
-
-          if (insertRes && insertRes.success) {
-            currentY += elem.layoutHeight + margin;
-          }
-          await new Promise(r => setTimeout(r, 500));
         } else if (elem.type === 'image' && elem.imagePath) {
-          // A. Insert image (takes native default center coordinate in-memory)
-          const insertRes = await PluginNoteAPI.insertImage(elem.imagePath) as any;
-          if (insertRes && insertRes.success && insertRes.result && insertRes.result.uuid) {
-            const imgUuid = insertRes.result.uuid;
+          // The SDK places inserted images at the page center and offers no supported way
+          // to reposition them from a plugin (modifyElements→105 unbind, insertElements→106
+          // invalid params) until Ratta exposes a positioning API. Two images would overlap
+          // at center, so we cap insertion at one figure per page (see the image-limit break
+          // above). Save after EACH image; a single batched save persists only the last one.
+          await PluginNoteAPI.insertImage(elem.imagePath);
+          await PluginNoteAPI.saveCurrentNote();
+          imagesInserted++;
+        }
+        currentY += elem.layoutHeight + margin;
+        insertedCountByClip[elem.clipId] = (insertedCountByClip[elem.clipId] || 0) + 1;
+        await new Promise(r => setTimeout(r, 300));
+      }
 
-            // B. Commit insertion to disk file
-            await PluginNoteAPI.saveCurrentNote();
+      // Persist any remaining (text) inserts. Images were saved individually above.
+      await PluginNoteAPI.saveCurrentNote();
 
-            // C. Load elements from disk and locate the image by UUID
-            const pageElementsRes = await PluginFileAPI.getElements(page, notePath) as any;
-            if (pageElementsRes && pageElementsRes.success && Array.isArray(pageElementsRes.result)) {
-              const imgElem = pageElementsRes.result.find((el: any) => el.uuid === imgUuid);
-              if (imgElem) {
-                // D. Modify coordinates to keep chronological order on disk
-                imgElem.picture = {
-                  picturePath: elem.imagePath,
-                  rect: {
-                    left: 100,
-                    top: currentY,
-                    right: pageWidth - 100,
-                    bottom: currentY + elem.layoutHeight,
-                  }
-                };
-                await PluginFileAPI.modifyElements(notePath, page, [imgElem]);
-              }
-            }
-            currentY += elem.layoutHeight + margin;
+      // Verify how many new elements actually persisted, so we NEVER delete a clip whose
+      // content didn't land in the note (image inserts can silently drop).
+      let persistedNew = 0;
+      const attemptedElems = Object.values(insertedCountByClip).reduce((a: number, b: number) => a + b, 0);
+      try {
+        const verify = await PluginFileAPI.getElements(page, notePath) as any;
+        if (verify && verify.success && Array.isArray(verify.result)) {
+          persistedNew = verify.result.filter((el: any) => el.uuid && !beforeIds.has(el.uuid)).length;
+        }
+      } catch (e) { /* best-effort */ }
+
+      const allPersisted = attemptedElems > 0 && persistedNew >= attemptedElems;
+      if (allPersisted && autoRemoveInserted) {
+        // Only now is it safe to remove inserted content from Clipper.
+        const fullyInsertedIds = clipsToInsert
+          .filter((c) => insertedCountByClip[c.id] === elemCountByClip[c.id])
+          .map((c) => c.id);
+        if (fullyInsertedIds.length > 0) await ClipService.deleteClips(fullyInsertedIds);
+
+        // A clip whose later elements were deferred (one-figure cap / out of space) is only
+        // partially inserted: trim off the elements that DID land so re-inserting the rest
+        // doesn't duplicate them. (Elements insert in order and the loop breaks once, so the
+        // inserted ones are always the leading prefix.)
+        for (const c of clipsToInsert) {
+          const inserted = insertedCountByClip[c.id] || 0;
+          const total = elemCountByClip[c.id] || 0;
+          if (inserted > 0 && inserted < total) {
+            await ClipService.trimInsertedElements(c.id, inserted);
           }
-          await new Promise(r => setTimeout(r, 500));
         }
       }
-      
-      ToastAndroid.show('Clips inserted successfully!', ToastAndroid.SHORT);
-      // Remove the successfully inserted clips from Clipper history database
-      const insertedIds = clipsToInsert.map(c => c.id);
-      await ClipService.deleteClips(insertedIds);
 
-      await PluginNoteAPI.saveCurrentNote();
-      // Automatically close Clipper view to show the newly inserted note contents
-      PluginManager.closePluginView();
+      if (outOfSpace) {
+        ToastAndroid.show(
+          'Not enough space on this page. Add a new page in the note, then insert the remaining clips.',
+          ToastAndroid.LONG
+        );
+      } else if (imageLimitHit) {
+        // Checked before the generic persist failure: when the only remaining content is a
+        // deferred image, nothing is attempted (attemptedElems === 0 → allPersisted false),
+        // which would otherwise mis-report as a persistence failure.
+        ToastAndroid.show(
+          'Only one figure per page. Add a new page, then insert the next figure.',
+          ToastAndroid.LONG
+        );
+        // Return to the note so the user can add a page for the remaining figure(s).
+        PluginManager.closePluginView();
+      } else if (!allPersisted) {
+        ToastAndroid.show('Some clips could not be inserted; they are kept in Clipper.', ToastAndroid.LONG);
+      } else {
+        ToastAndroid.show(
+          autoRemoveInserted ? 'Clips inserted successfully!' : 'Clips inserted (kept in Clipper)',
+          ToastAndroid.SHORT
+        );
+        // Return to the document to show the newly inserted content.
+        PluginManager.closePluginView();
+      }
     } catch (e: any) {
       ToastAndroid.show(`Insert failed: ${e.message}`, ToastAndroid.SHORT);
     }
@@ -809,6 +925,9 @@ export default function App() {
               </Pressable>
               <Pressable onPress={() => setIsPopoverOpen(true)} style={styles.iconButton} testID="filter-btn">
                 <Image source={require('../assets/icon/filter.png')} style={styles.iconImage} />
+              </Pressable>
+              <Pressable onPress={() => setIsSettingsOpen(true)} style={styles.iconButton} testID="settings-btn">
+                <Image source={require('../assets/icon/settings.png')} style={styles.iconImage} />
               </Pressable>
             </View>
           </View>
@@ -920,6 +1039,18 @@ export default function App() {
             setIsPopoverOpen(false);
           }}
           onClose={() => setIsPopoverOpen(false)}
+        />
+      )}
+
+      {/* Settings Popover Menu */}
+      {isSettingsOpen && (
+        <SettingsPopover
+          autoRemoveInserted={autoRemoveInserted}
+          onAutoRemoveChange={(value) => {
+            setAutoRemoveInserted(value);
+            StorageService.setAutoRemoveInserted(value);
+          }}
+          onClose={() => setIsSettingsOpen(false)}
         />
       )}
     </SafeAreaView>

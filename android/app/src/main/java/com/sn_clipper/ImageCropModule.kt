@@ -11,6 +11,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Rect
 import java.io.FileOutputStream
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     override fun getName(): String {
@@ -188,14 +189,23 @@ class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
         }
     }
 
+    // Cleared when the module is torn down (e.g. an RN reload) so a stale instance holding
+    // a dead ReactApplicationContext isn't retained or used to emit events.
+    override fun invalidate() {
+        if (foregroundInstance === this) foregroundInstance = null
+        super.invalidate()
+    }
+
     companion object {
-        @JvmStatic
+        // @Volatile: written on the RN bridge thread and read from event emits; volatile
+        // guarantees cross-thread visibility on multi-core hardware.
+        @JvmStatic @Volatile
         var launchMode: String = "normal"
 
-        @JvmStatic
+        @JvmStatic @Volatile
         var promptText: String = ""
 
-        @JvmStatic
+        @JvmStatic @Volatile
         var foregroundInstance: ImageCropModule? = null
     }
 
@@ -235,6 +245,7 @@ class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     // reader-page capture (crisp, at the user's font) used for reflowable EPUBs.
     @ReactMethod
     fun captureScreen(destPath: String, promise: Promise) {
+        var p: Process? = null
         try {
             val clean = if (destPath.startsWith("file://")) destPath.substring(7) else destPath
             File(clean).parentFile?.mkdirs()
@@ -242,8 +253,16 @@ class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
             // no command injection. With a FILENAME arg, `screencap` writes the PNG to
             // that file and produces no stdout, so waitFor() can't block on an undrained
             // stdout pipe (verified empirically across many captures).
-            val p = Runtime.getRuntime().exec(arrayOf("screencap", "-p", clean))
-            val exit = p.waitFor()
+            p = Runtime.getRuntime().exec(arrayOf("screencap", "-p", clean))
+            // Bound the wait so a hung screencap (low memory, display-driver stalls) can't
+            // block this thread indefinitely; force-kill and fail cleanly on timeout.
+            val finished = p.waitFor(10, TimeUnit.SECONDS)
+            if (!finished) {
+                p.destroyForcibly()
+                promise.reject("SCREENCAP_TIMEOUT", "screencap did not complete within 10s")
+                return
+            }
+            val exit = p.exitValue()
             val f = File(clean)
             if (exit == 0 && f.exists() && f.length() > 0L) {
                 val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -259,6 +278,15 @@ class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
             }
         } catch (e: Exception) {
             promise.reject("SCREENCAP_ERROR", e.message, e)
+        } finally {
+            // Release the process and its stdin/stdout/stderr file descriptors even on the
+            // success path (waitFor alone does not close them).
+            p?.let {
+                try { it.inputStream.close() } catch (_: Exception) {}
+                try { it.outputStream.close() } catch (_: Exception) {}
+                try { it.errorStream.close() } catch (_: Exception) {}
+                try { it.destroy() } catch (_: Exception) {}
+            }
         }
     }
 }

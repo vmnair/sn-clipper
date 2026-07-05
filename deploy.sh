@@ -24,7 +24,8 @@ fi
 
 # 3. If connected, proceed with ADB push
 DEVICE_NAME=$(adb devices | grep -v "List" | head -n 1 | awk '{print $1}')
-echo -e "${GREEN}Supernote connected: $DEVICE_NAME${NC}"
+# printf (not echo -e) so an unexpected device serial isn't interpreted as escapes.
+printf '%bSupernote connected: %s%b\n' "$GREEN" "$DEVICE_NAME" "$NC"
 
 # Remove previous plugin file from MyStyle folder on the device
 echo -e "${BLUE}Removing old SnClipper.snplg from Supernote/MyStyle...${NC}"

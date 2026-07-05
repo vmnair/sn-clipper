@@ -98,6 +98,7 @@ jest.mock('sn-plugin-lib', () => ({
     getLastElement: jest.fn().mockResolvedValue({ success: true, result: { uuid: 'mock-uuid', picture: { rect: { left: 0, top: 0, right: 300, bottom: 300 } } } }),
     getElements: jest.fn().mockResolvedValue({ success: true, result: [] }),
     modifyElements: jest.fn().mockResolvedValue({ success: true }),
+    insertElements: jest.fn().mockResolvedValue({ success: true }),
     generateNotePng: jest.fn().mockResolvedValue({ success: true }),
   },
   PluginDocAPI: {
@@ -353,14 +354,12 @@ describe('App Component', () => {
           },
         ],
       })
+      // Verification read: both new elements persisted (text + image, with ids).
       .mockResolvedValueOnce({
         success: true,
         result: [
-          {
-            uuid: 'mock-uuid',
-            type: 200,
-            picture: { rect: { left: 0, top: 0, right: 300, bottom: 300 } },
-          },
+          { uuid: 'mock-text-uuid', type: 500, textBox: { textRect: { left: 100, top: 230, right: 1304, bottom: 400 } } },
+          { uuid: 'mock-img-uuid', type: 200, picture: { rect: { left: 100, top: 430, right: 700, bottom: 1000 } } },
         ],
       });
 
@@ -376,12 +375,80 @@ describe('App Component', () => {
 
     expect(PluginNoteAPI.insertText).toHaveBeenCalled();
     expect(PluginNoteAPI.insertImage).toHaveBeenCalledWith('/path/to/clip.png');
-    expect(PluginFileAPI.modifyElements).toHaveBeenCalled();
     expect(ToastAndroid.show).toHaveBeenCalledWith('Clips inserted successfully!', ToastAndroid.SHORT);
   });
 
-  it('displays warning toast when clips do not fit on active note page', async () => {
+  it('inserts only one figure per page and keeps the rest in Clipper', async () => {
+    const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
+      // Verification read: the first image persisted (one new element with an id).
+      .mockResolvedValueOnce({
+        success: true,
+        result: [
+          { uuid: 'fig-a-uuid', type: 200, picture: { rect: { left: 100, top: 100, right: 700, bottom: 700 } } },
+        ],
+      });
+
+    await ClipService.addImageClip('/path/to/figureA.png', 'Doc A');
+    await ClipService.addImageClip('/path/to/figureB.png', 'Doc A');
+
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // Exactly one figure is inserted; the other is deferred to the next page. (Insertion
+    // order follows the visible sort, so don't assume which of the two goes first.)
+    const bothPaths = ['/path/to/figureA.png', '/path/to/figureB.png'];
+    expect(PluginNoteAPI.insertImage).toHaveBeenCalledTimes(1);
+    const insertedPath = (PluginNoteAPI.insertImage as jest.Mock).mock.calls[0][0];
+    expect(bothPaths).toContain(insertedPath);
+    expect(ToastAndroid.show).toHaveBeenCalledWith(
+      'Only one figure per page. Add a new page, then insert the next figure.',
+      ToastAndroid.LONG
+    );
+    // The deferred figure (the one NOT inserted) remains in Clipper; the inserted one is
+    // auto-removed by default.
+    const remaining = ClipService.getClipsSync();
+    expect(remaining.length).toBe(1);
+    const remainingPath = remaining[0].elements.find((e) => e.type === 'image')?.imagePath;
+    expect(remainingPath).toBe(bothPaths.find((p) => p !== insertedPath));
+  });
+
+  it('defers an image when the page already has one, keeping it in Clipper', async () => {
+    const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    // Scan finds a picture already on the page (from a previous insert).
+    PluginFileAPI.getElements.mockResolvedValueOnce({
+      success: true,
+      result: [
+        { uuid: 'existing-fig', type: 200, picture: { rect: { left: 100, top: 100, right: 700, bottom: 700 } } },
+      ],
+    });
+
+    await ClipService.addImageClip('/path/to/figureC.png', 'Doc A');
+
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // The page already has a figure, so the new one is deferred (never inserted) and kept.
+    expect(PluginNoteAPI.insertImage).not.toHaveBeenCalled();
+    expect(ToastAndroid.show).toHaveBeenCalledWith(
+      'Only one figure per page. Add a new page, then insert the next figure.',
+      ToastAndroid.LONG
+    );
+    expect(ClipService.getClipsSync().length).toBe(1);
+  });
+
+  it('alerts to add a page and does not insert when a clip does not fit', async () => {
     const { PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
+    // Existing content fills nearly the whole page, so the new clip cannot fit.
     PluginFileAPI.getElements.mockResolvedValueOnce({
       success: true,
       result: [
@@ -400,9 +467,10 @@ describe('App Component', () => {
       await insertBtn.props.onPress();
     });
 
-    expect(PluginNoteAPI.insertText).toHaveBeenCalled();
+    // Nothing is placed off-page; the user is told to add a page instead.
+    expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
     expect(ToastAndroid.show).toHaveBeenCalledWith(
-      'Warning: Selected clips may exceed page bounds.',
+      'Not enough space on this page. Add a new page in the note, then insert the remaining clips.',
       ToastAndroid.LONG
     );
   });
@@ -440,7 +508,15 @@ describe('App Component', () => {
   });
 
   it('inserts selected clips sequentially into active note', async () => {
-    const { PluginNoteAPI } = require('sn-plugin-lib');
+    const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
+      .mockResolvedValueOnce({ // verification read: the inserted text persisted
+        success: true,
+        result: [
+          { uuid: 'sel-text-uuid', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 270 } } },
+        ],
+      });
     await ClipService.addClip('Selected textbox snippet', 'Doc A');
     await ClipService.addClip('Unselected snippet', 'Doc A');
 
@@ -463,6 +539,58 @@ describe('App Component', () => {
       textContentFull: 'Selected textbox snippet'
     }));
     expect(ToastAndroid.show).toHaveBeenCalledWith('Clips inserted successfully!', ToastAndroid.SHORT);
+  });
+
+  it('opens the settings popover with auto-remove on by default', async () => {
+    const root = await renderApp();
+
+    const settingsBtn = root.root.findByProps({ testID: 'settings-btn' });
+    await act(async () => {
+      settingsBtn.props.onPress();
+    });
+
+    // Popover header + toggle row render
+    const header = root.root.findAllByProps({ children: 'Settings' });
+    expect(header.length).toBeGreaterThanOrEqual(1);
+    const toggleRow = root.root.findByProps({ testID: 'setting-auto-remove' });
+    expect(toggleRow).toBeTruthy();
+  });
+
+  it('keeps inserted clips in Clipper when auto-remove is turned off', async () => {
+    const { PluginFileAPI } = require('sn-plugin-lib');
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
+      .mockResolvedValueOnce({ // verification read: the inserted text persisted
+        success: true,
+        result: [
+          { uuid: 'kept-text-uuid', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 270 } } },
+        ],
+      });
+
+    await ClipService.addClip('Snippet to keep', 'Doc A');
+    const deleteSpy = jest.spyOn(ClipService, 'deleteClips');
+
+    const root = await renderApp();
+
+    // Turn the auto-remove setting off
+    const settingsBtn = root.root.findByProps({ testID: 'settings-btn' });
+    await act(async () => {
+      settingsBtn.props.onPress();
+    });
+    const toggleRow = root.root.findByProps({ testID: 'setting-auto-remove' });
+    await act(async () => {
+      toggleRow.props.onPress();
+    });
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // Inserted clips are NOT removed, and the toast reflects that.
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(ClipService.getClipsSync().length).toBe(1);
+    expect(ToastAndroid.show).toHaveBeenCalledWith('Clips inserted (kept in Clipper)', ToastAndroid.SHORT);
   });
 
   it('handles search and filtering popovers correctly', async () => {

@@ -6,6 +6,8 @@ export interface ClipSubElement {
   type: 'text' | 'image';
   text?: string;
   imagePath?: string;
+  width?: number; // Image pixel width (image elements only), captured at crop time
+  height?: number; // Image pixel height (image elements only)
 }
 
 export interface ClipItem {
@@ -17,6 +19,7 @@ export interface ClipItem {
 }
 
 const STORAGE_KEY = 'sn_clipper_aggregated_clips';
+const AUTO_REMOVE_KEY = 'clipper_auto_remove_inserted';
 
 export class StorageService {
   /**
@@ -60,16 +63,19 @@ export class StorageService {
   }
 
   /**
-   * Save the clipper launch mode to storage.
+   * Save the clipper launch mode. AsyncStorage is the durable source of truth (it survives
+   * a plugin-process/RN recreation between the background handler setting the mode and the
+   * App reading it); the native static is also set, purely so it can emit onLaunchModeChange
+   * synchronously to wake an already-mounted App. Every native write goes through here, so
+   * the two stay in sync.
    */
   static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped'): Promise<void> {
     try {
+      await AsyncStorage.setItem('clipper_launch_mode', mode);
       const { NativeModules } = require('react-native');
       const { ImageCropModule } = NativeModules;
       if (ImageCropModule && typeof ImageCropModule.setLaunchMode === 'function') {
         await ImageCropModule.setLaunchMode(mode);
-      } else {
-        await AsyncStorage.setItem('clipper_launch_mode', mode);
       }
     } catch (e) {
       console.error('Failed to save launch mode:', e);
@@ -77,19 +83,12 @@ export class StorageService {
   }
 
   /**
-   * Retrieve the clipper launch mode.
+   * Retrieve the clipper launch mode from the durable store.
    */
   static async getLaunchMode(): Promise<'normal' | 'crop' | 'prompt' | 'autoclipped'> {
     try {
-      const { NativeModules } = require('react-native');
-      const { ImageCropModule } = NativeModules;
-      if (ImageCropModule && typeof ImageCropModule.getLaunchMode === 'function') {
-        const mode = await ImageCropModule.getLaunchMode();
-        return (mode as any) || 'normal';
-      } else {
-        const mode = await AsyncStorage.getItem('clipper_launch_mode');
-        return (mode as any) || 'normal';
-      }
+      const mode = await AsyncStorage.getItem('clipper_launch_mode');
+      return (mode as any) || 'normal';
     } catch (e) {
       console.error('Failed to load launch mode:', e);
     }
@@ -97,16 +96,16 @@ export class StorageService {
   }
 
   /**
-   * Save the clipper prompt text context.
+   * Save the clipper prompt text context. Persisted to AsyncStorage (durable) and mirrored
+   * to the native static so both stay in sync (see setLaunchMode).
    */
   static async setPromptText(text: string): Promise<void> {
     try {
+      await AsyncStorage.setItem('clipper_prompt_text', text);
       const { NativeModules } = require('react-native');
       const { ImageCropModule } = NativeModules;
       if (ImageCropModule && typeof ImageCropModule.setPromptText === 'function') {
         await ImageCropModule.setPromptText(text);
-      } else {
-        await AsyncStorage.setItem('clipper_prompt_text', text);
       }
     } catch (e) {
       console.error('Failed to save prompt text:', e);
@@ -114,21 +113,41 @@ export class StorageService {
   }
 
   /**
-   * Retrieve the clipper prompt text context.
+   * Retrieve the clipper prompt text context from the durable store.
    */
   static async getPromptText(): Promise<string> {
     try {
-      const { NativeModules } = require('react-native');
-      const { ImageCropModule } = NativeModules;
-      if (ImageCropModule && typeof ImageCropModule.getPromptText === 'function') {
-        return await ImageCropModule.getPromptText();
-      } else {
-        const text = await AsyncStorage.getItem('clipper_prompt_text');
-        return text || '';
-      }
+      const text = await AsyncStorage.getItem('clipper_prompt_text');
+      return text || '';
     } catch (e) {
       console.error('Failed to load prompt text:', e);
     }
     return '';
+  }
+
+  /**
+   * Retrieve whether clips should be removed from Clipper after they are
+   * successfully inserted into a note. Defaults to true (on) when unset.
+   */
+  static async getAutoRemoveInserted(): Promise<boolean> {
+    try {
+      const value = await AsyncStorage.getItem(AUTO_REMOVE_KEY);
+      if (value === null) return true; // default on
+      return value === 'true';
+    } catch (e) {
+      console.error('Failed to load auto-remove setting:', e);
+    }
+    return true;
+  }
+
+  /**
+   * Persist whether inserted clips should be removed from Clipper.
+   */
+  static async setAutoRemoveInserted(value: boolean): Promise<void> {
+    try {
+      await AsyncStorage.setItem(AUTO_REMOVE_KEY, value ? 'true' : 'false');
+    } catch (e) {
+      console.error('Failed to save auto-remove setting:', e);
+    }
   }
 }

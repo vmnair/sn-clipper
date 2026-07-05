@@ -222,4 +222,54 @@ describe('ClipService', () => {
       expect(FileUtils.deleteFile).toHaveBeenCalledWith('/path/to/2.png');
     });
   });
+
+  describe('trimInsertedElements', () => {
+    it('removes the inserted leading elements, deletes their images, and recomputes text', async () => {
+      const { FileUtils } = require('sn-plugin-lib');
+      const mockClips = [
+        {
+          id: 'mixed',
+          text: 'Intro',
+          elements: [
+            { type: 'text', text: 'Intro' },
+            { type: 'image', imagePath: '/path/to/figA.png' },
+            { type: 'image', imagePath: '/path/to/figB.png' },
+          ],
+          articleName: 'Doc A.pdf',
+          timestamp: 100,
+        },
+      ];
+      jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+      await ClipService.init();
+
+      // The text and first figure were inserted; the second figure was deferred.
+      await ClipService.trimInsertedElements('mixed', 2);
+
+      const clips = ClipService.getClipsSync();
+      expect(clips.length).toBe(1);
+      expect(clips[0].elements).toEqual([{ type: 'image', imagePath: '/path/to/figB.png' }]);
+      expect(clips[0].text).toBe(''); // no text elements remain
+      // Only the removed figure's file is deleted; the deferred one is kept.
+      expect(FileUtils.deleteFile).toHaveBeenCalledWith('/path/to/figA.png');
+      expect(FileUtils.deleteFile).not.toHaveBeenCalledWith('/path/to/figB.png');
+    });
+
+    it('deletes the whole clip when all elements were inserted', async () => {
+      const mockClips = [
+        {
+          id: 'solo',
+          text: 'All of it',
+          elements: [{ type: 'text', text: 'All of it' }],
+          articleName: 'Doc A.pdf',
+          timestamp: 100,
+        },
+      ];
+      jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+      await ClipService.init();
+
+      await ClipService.trimInsertedElements('solo', 1);
+
+      expect(ClipService.getClipsSync().length).toBe(0);
+    });
+  });
 });

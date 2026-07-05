@@ -122,7 +122,7 @@ export class ClipService {
     const newClip: ClipItem = {
       id: Date.now().toString() + Math.random().toString(36).substring(2, 6),
       text: '', // Pure image clip starts with empty text description
-      elements: [{ type: 'image', imagePath, width, height } as any],
+      elements: [{ type: 'image', imagePath, width, height }],
       articleName: articleName.trim() || 'Unknown Document',
       timestamp: Date.now(),
     };
@@ -166,6 +166,47 @@ export class ClipService {
     // Persist
     await StorageService.saveClips(this.clips);
 
+    await this.updateButton();
+    this.notifyListeners();
+  }
+
+  /**
+   * Remove the first `count` sub-elements from a clip after they have been successfully
+   * inserted into a note, leaving only the not-yet-inserted remainder. Used when an insert
+   * is partial (e.g. the one-figure-per-page cap or running out of page space defers a
+   * clip's later elements) so re-inserting doesn't duplicate the already-placed content.
+   * The backing image files of the removed elements are deleted; if nothing remains the
+   * whole clip is removed.
+   */
+  static async trimInsertedElements(clipId: string, count: number): Promise<void> {
+    await this.init();
+    const clip = this.clips.find(c => c.id === clipId);
+    if (!clip || count <= 0) return;
+    if (count >= clip.elements.length) {
+      await this.deleteClips([clipId]);
+      return;
+    }
+
+    const removed = clip.elements.slice(0, count);
+    const { FileUtils } = require('sn-plugin-lib');
+    for (const elem of removed) {
+      if (elem.type === 'image' && elem.imagePath) {
+        try {
+          await FileUtils.deleteFile(elem.imagePath);
+        } catch (e) {
+          console.error(`Failed to delete image file: ${elem.imagePath}`, e);
+        }
+      }
+    }
+
+    clip.elements = clip.elements.slice(count);
+    // Recompute the flat text (search/copy/backward-compat) from the remaining text elements.
+    clip.text = clip.elements
+      .filter(e => e.type === 'text' && e.text)
+      .map(e => e.text)
+      .join('\n\n');
+
+    await StorageService.saveClips(this.clips);
     await this.updateButton();
     this.notifyListeners();
   }

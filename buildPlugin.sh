@@ -488,9 +488,11 @@ build_react_native_bundle() {
     write_color_output "Starting React Native bundling..." "Blue"
     local bundle_output="$output_dir/$project_name.bundle"
     local assets_dir="$output_dir"
-    local cmd="npx react-native bundle --entry-file index.js --bundle-output \"$bundle_output\" --platform android --assets-dest \"$assets_dir\" --dev false"
-    write_color_output "Executing command: $cmd" "Yellow"
-    (cd "$project_root" && eval "$cmd") && write_color_output "Bundle generated: $bundle_output" "Green"
+    write_color_output "Bundling index.js -> $bundle_output" "Yellow"
+    # Invoke directly (no eval/shell string) so paths are passed as literal argv — avoids
+    # any shell interpretation of values derived from package.json / paths.
+    (cd "$project_root" && npx react-native bundle --entry-file index.js --bundle-output "$bundle_output" --platform android --assets-dest "$assets_dir" --dev false) \
+        && write_color_output "Bundle generated: $bundle_output" "Green"
 }
 
 # =========================================================

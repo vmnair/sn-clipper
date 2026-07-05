@@ -67,5 +67,17 @@ describe('StorageService', () => {
     expect(loaded[0].elements).toEqual([{ type: 'text', text: 'Legacy highlight text content' }]);
   });
 
+  it('defaults the auto-remove-inserted setting to on when unset', async () => {
+    expect(await StorageService.getAutoRemoveInserted()).toBe(true);
+  });
+
+  it('persists and reads back the auto-remove-inserted setting', async () => {
+    await StorageService.setAutoRemoveInserted(false);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('clipper_auto_remove_inserted', 'false');
+    expect(await StorageService.getAutoRemoveInserted()).toBe(false);
+
+    await StorageService.setAutoRemoveInserted(true);
+    expect(await StorageService.getAutoRemoveInserted()).toBe(true);
+  });
 
 });
