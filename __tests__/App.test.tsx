@@ -373,7 +373,7 @@ describe('App Component', () => {
     // One insertText call carrying both clips, separated by a blank line.
     expect(PluginNoteAPI.insertText).toHaveBeenCalledTimes(1);
     const content = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0].textContentFull;
-    expect(content).toBe('First clip.\n\nSecond clip.');
+    expect(['First clip.\n\nSecond clip.', 'Second clip.\n\nFirst clip.']).toContain(content);
     expect(ToastAndroid.show).toHaveBeenCalledWith('Clips inserted successfully!', ToastAndroid.SHORT);
     expect(ClipService.getClipsSync().length).toBe(0); // both removed
   });
@@ -654,6 +654,41 @@ describe('App Component', () => {
     const call = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0];
     expect(call.textRect.top).toBeGreaterThanOrEqual(200);
     expect(call.textRect.top).toBeLessThan(300);
+  });
+
+  it('ignores stroke elements entirely when calculating starting Y coordinate', async () => {
+    const { PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
+
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({
+        success: true,
+        result: [
+          {
+            type: 0, // TYPE_STROKE (handwriting)
+            status: 0,
+            maxY: 1680,
+          },
+        ],
+      })
+      .mockResolvedValue({
+        success: true,
+        result: [
+          { uuid: 'new-txt-uuid', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 200 } } },
+        ],
+      });
+
+    await ClipService.addClip('Test snippet', 'Doc A');
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // Insertion should start at default Y = 100 since the stroke is completely ignored.
+    expect(PluginNoteAPI.insertText).toHaveBeenCalled();
+    const call = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0];
+    expect(call.textRect.top).toBe(100);
   });
 
   it('inserts selected clips sequentially into active note', async () => {

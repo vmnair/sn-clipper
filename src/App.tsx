@@ -720,6 +720,7 @@ export default function App() {
       const fontSize = insertFontSize;
       const lineHeight = Math.round(fontSize * 1.35);
       const gap = Math.round(lineHeight * 0.6);
+      const MIN_SPLIT_LINES = 3;
       const beforeIds = new Set<string>();
       // Count images already on this page (from a previous insert) so the one-figure-per-page
       // cap accounts for them — otherwise a second figure would overlap the existing one.
@@ -742,15 +743,17 @@ export default function App() {
             if (el.picture && el.picture.rect) {
               elBottom = el.picture.rect.bottom;
             }
+          } else if (el.type === 0) { // Stroke / handwriting type
+            continue; // Ignore stroke elements entirely
           }
           if (elBottom <= 0 && el.maxY) {
+            // Fallback for non-stroke types that have maxY but no computed bottom
             elBottom = el.maxY;
           }
           if (elBottom > currentY) {
             currentY = elBottom;
           }
         }
-
       }
       // Start slightly below the bottom-most element
       if (currentY > 100) {
@@ -788,7 +791,6 @@ export default function App() {
 
       const insertedCountByClip: Record<string, number> = {};
       const splitRemainder: Record<string, string> = {}; // clipId -> un-inserted tail of a split clip
-      const MIN_SPLIT_LINES = 3;
       let imagesInserted = existingImageCount;
       let outOfSpace = false;    // text didn't fit; more on the next page
       let imageLimitHit = false; // a figure was deferred (needs its own empty page)

@@ -13,4 +13,8 @@
 - **Implementation Plan Location**:
   - Always place the `implementation_plan.md` directly inside the repository workspace's `plan/` folder (i.e. `plan/implementation_plan.md`). The developer instance will always look there for instructions and details to execute.
 
+- **Default to Brainstorming Mode**:
+  - Always start the conversation in **Brainstorming Mode** (i.e. purely conceptual analysis, discussion, and Q&A).
+  - Explicitly confirm this mode at the beginning of responses with a `🧠 Status: Brainstorming Mode` header.
+  - Never modify files, write code, stage files, or run compile/build scripts (like `./buildPlugin.sh`) unless the user explicitly and directly instructs you to do so in the current turn.
 
