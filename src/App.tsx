@@ -743,6 +743,10 @@ export default function App() {
             if (el.picture && el.picture.rect) {
               elBottom = el.picture.rect.bottom;
             }
+          } else if (el.type === 100) { // Title/Heading type
+            if (el.title) {
+              elBottom = el.title.Y + el.title.height;
+            }
           } else if (el.type === 0) { // Stroke / handwriting type
             continue; // Ignore stroke elements entirely
           }

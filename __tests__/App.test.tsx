@@ -691,6 +691,44 @@ describe('App Component', () => {
     expect(call.textRect.top).toBe(100);
   });
 
+  it('handles title (heading) elements when calculating starting Y coordinate', async () => {
+    const { PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
+
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({
+        success: true,
+        result: [
+          {
+            type: 100, // TYPE_TITLE (heading)
+            status: 0,
+            title: {
+              Y: 100,
+              height: 80,
+            },
+          },
+        ],
+      })
+      .mockResolvedValue({
+        success: true,
+        result: [
+          { uuid: 'new-txt-uuid', type: 500, textBox: { textRect: { left: 100, top: 180, right: 1304, bottom: 280 } } },
+        ],
+      });
+
+    await ClipService.addClip('Test snippet', 'Doc A');
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // Insertion should start below title: Y = 100 + 80 + gap (35) = 215
+    expect(PluginNoteAPI.insertText).toHaveBeenCalled();
+    const call = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0];
+    expect(call.textRect.top).toBe(215);
+  });
+
   it('inserts selected clips sequentially into active note', async () => {
     const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     PluginFileAPI.getElements
