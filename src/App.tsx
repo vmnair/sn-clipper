@@ -13,11 +13,12 @@ import {
   AppState,
 } from 'react-native';
 import { ClipService } from './services/ClipService';
-import { ClipItem, StorageService, DEFAULT_INSERT_FONT_SIZE } from './services/StorageService';
+import { ClipItem, ClipSubElement, StorageService, DEFAULT_INSERT_FONT_SIZE } from './services/StorageService';
 import { PluginManager } from 'sn-plugin-lib';
 import { HighContrastButton } from './components/HighContrastButton';
 import { CropOverlay } from './components/CropOverlay';
 import { PromptDialog } from './components/PromptDialog';
+import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { SearchBar } from './components/SearchBar';
 import { FilterPopover } from './components/FilterPopover';
 import { SettingsPopover } from './components/SettingsPopover';
@@ -111,6 +112,12 @@ export default function App() {
   const [insertFontSize, setInsertFontSize] = useState<number>(DEFAULT_INSERT_FONT_SIZE);
   // Combine inserted text clips into a single text box (default on).
   const [combineInserted, setCombineInserted] = useState(true);
+
+  // Confirmation Dialog States (for deleted/broken source links)
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [confirmTitle, setConfirmTitle] = useState('');
+  const [confirmDescription, setConfirmDescription] = useState('');
+  const [onConfirmCallback, setOnConfirmCallback] = useState<{ fn: () => void } | null>(null);
 
   // A plugin button press (e.g. the reader's selection-popup "Clip" entry) fires
   // while the reader page is still on screen, so we screenshot it right then. The
@@ -477,6 +484,53 @@ export default function App() {
     PluginManager.closePluginView();
   };
 
+  const handleOpenSource = async (clip: ClipItem, element: ClipSubElement, elementIndex: number) => {
+    if (!element.documentPath) return;
+    try {
+      const { FileUtils, PluginCommAPI } = require('sn-plugin-lib');
+      const exists = await FileUtils.exists(element.documentPath);
+      if (!exists) {
+        setConfirmTitle('Broken Source Link');
+        setConfirmDescription(
+          `The original document "${element.articleName || clip.articleName}" has been deleted. Would you like to remove the source link from this clipping? (The highlight text will be kept).`
+        );
+        setOnConfirmCallback({
+          fn: async () => {
+            await ClipService.removeLinkFromElement(clip.id, elementIndex);
+            setShowConfirmDialog(false);
+            ToastAndroid.show('Source link removed.', ToastAndroid.SHORT);
+          },
+        });
+        setShowConfirmDialog(true);
+        return;
+      }
+
+      // Check if we are already viewing this file and page to avoid redundant refreshes
+      const fileRes = await PluginCommAPI.getCurrentFilePath();
+      const pageRes = await PluginCommAPI.getCurrentPageNum();
+      if (fileRes.success && fileRes.result && pageRes.success && pageRes.result !== undefined && pageRes.result !== null) {
+        const normalizePath = (p: string) => p.startsWith('file://') ? p.substring(7) : p;
+        const targetPath = normalizePath(element.documentPath);
+        const currentPath = normalizePath(fileRes.result);
+        const targetPage = element.documentPage ?? 0;
+        const currentPage = pageRes.result;
+
+        const isEpub = targetPath.toLowerCase().endsWith('.epub');
+        if (!isEpub && targetPath === currentPath && targetPage === currentPage) {
+          ToastAndroid.show('Already on this page.', ToastAndroid.SHORT);
+          PluginManager.closePluginView();
+          return;
+        }
+      }
+
+      const { NativeModules } = require('react-native');
+      await NativeModules.ImageCropModule.openFileDirectly(element.documentPath, element.documentPage ?? 0);
+      PluginManager.closePluginView();
+    } catch (err: any) {
+      ToastAndroid.show(`Failed to open source document: ${err.message}`, ToastAndroid.SHORT);
+    }
+  };
+
   const toggleSearch = () => {
     if (isSearchVisible) {
       setSearchQuery('');
@@ -617,7 +671,14 @@ export default function App() {
         }
 
         const articleName = deriveArticleName(currentFilePath);
-        const count = await ClipService.addImageClip(destPath, articleName, rect.width, rect.height);
+        const count = await ClipService.addImageClip(
+          destPath,
+          articleName,
+          rect.width,
+          rect.height,
+          currentFilePath || undefined,
+          currentPageNum
+        );
         ToastAndroid.show(`Region cropped! (${count} clips aggregated)`, ToastAndroid.SHORT);
         setIsCropping(false);
         // Automatically close plugin view to return back to the document
@@ -648,7 +709,12 @@ export default function App() {
     if (!selectionText) return;
     try {
       const articleName = deriveArticleName(currentFilePath);
-      const count = await ClipService.addClip(selectionText, articleName);
+      const count = await ClipService.addClip(
+        selectionText,
+        articleName,
+        currentFilePath || undefined,
+        currentPageNum
+      );
       ToastAndroid.show(`Clipped text! (${count} clips aggregated)`, ToastAndroid.SHORT);
       setSelectionText(null);
       setIsCropping(false);
@@ -766,19 +832,44 @@ export default function App() {
 
       // Flatten clips into an ordered list of element "items", tagging each with its clip id
       // so we can tell which clips were fully inserted (safe to remove) vs. deferred.
-      const items: { clipId: string; type: 'text' | 'image'; text?: string; imagePath?: string }[] = [];
+      const items: {
+        clipId: string;
+        type: 'text' | 'image';
+        text?: string;
+        imagePath?: string;
+        documentPath?: string;
+        documentPage?: number;
+        articleName?: string;
+      }[] = [];
       const elemCountByClip: Record<string, number> = {};
       for (const clip of clipsToInsert) {
         for (const el of clip.elements) {
-          items.push({ clipId: clip.id, type: el.type, text: el.text, imagePath: el.imagePath });
+          items.push({
+            clipId: clip.id,
+            type: el.type,
+            text: el.text,
+            imagePath: el.imagePath,
+            documentPath: el.documentPath,
+            documentPage: el.documentPage,
+            articleName: el.articleName || clip.articleName
+          });
           elemCountByClip[clip.id] = (elemCountByClip[clip.id] || 0) + 1;
         }
       }
 
       const maxWidth = pageWidth - 200;
-      // Approx characters per line for the chosen font (proportional font ~0.55·fontSize wide).
-      const charsPerLine = Math.max(1, Math.floor(maxWidth / (fontSize * 0.55)));
-      const estimateTextHeight = (t: string) => Math.max(1, Math.ceil((t || '').length / charsPerLine)) * lineHeight;
+      // Approx characters per line for the chosen font (proportional font ~0.38·fontSize wide).
+      const charsPerLine = Math.max(1, Math.floor(maxWidth / (fontSize * 0.38)));
+      const estimateTextLines = (t: string) => {
+        if (!t) return 0;
+        const paragraphs = t.split('\n');
+        let totalLines = 0;
+        for (const p of paragraphs) {
+          totalLines += Math.max(1, Math.ceil(p.length / charsPerLine));
+        }
+        return totalLines;
+      };
+      const estimateTextHeight = (linesCount: number) => Math.round((linesCount + 0.3) * lineHeight);
       const insertTextBox = async (content: string, top: number, height: number) => {
         await PluginNoteAPI.insertText({
           textContentFull: content,
@@ -791,6 +882,77 @@ export default function App() {
           textFrameStyle: 0,
           textEditable: 1,
         });
+      };
+
+      const fontSizeLink = Math.round(fontSize * 0.8);
+      const linkHeight = Math.round(fontSizeLink * 1.35);
+      const linkSpace = linkHeight + gap;
+
+      const { FileUtils } = require('sn-plugin-lib');
+
+      const performInsertLink = async (destPath: string, destPage: number, articleNameStr: string, topY: number) => {
+        const pageNum = destPage !== undefined ? destPage + 1 : 1;
+        const cleanName = articleNameStr.replace(/\.[^/.]+$/, ""); // strip extension
+        const shortenedName = cleanName.length > 20 ? cleanName.substring(0, 17) + '...' : cleanName;
+        const labelText = `[${shortenedName}, p. ${pageNum} ↗]`;
+        const linkType = destPath.endsWith('.note') || destPath.endsWith('.not')
+          ? (destPage !== undefined ? 0 : 1)
+          : 2;
+
+        await PluginNoteAPI.insertTextLink({
+          destPath,
+          destPage: destPage || 0,
+          style: 0, // solid underline
+          linkType,
+          rect: { left: 100, top: topY, right: 100 + maxWidth, bottom: topY + linkHeight },
+          fontSize: fontSizeLink,
+          fullText: labelText,
+          showText: labelText,
+          isItalic: 0,
+        });
+      };
+
+      const getUniqueLinksSync = (groupItems: typeof items) => {
+        const keys = new Set<string>();
+        for (const item of groupItems) {
+          if (item.documentPath) {
+            keys.add(`${item.documentPath}#${item.documentPage || 0}`);
+          }
+        }
+        return keys.size;
+      };
+
+      const getValidLinksForGroup = async (groupItems: typeof items) => {
+        const uniqueLinksMap = new Map<string, { path: string; page: number; articleName: string }>();
+        for (const item of groupItems) {
+          if (item.documentPath) {
+            const exists = await FileUtils.exists(item.documentPath);
+            if (exists) {
+              const key = `${item.documentPath}#${item.documentPage || 0}`;
+              uniqueLinksMap.set(key, {
+                path: item.documentPath,
+                page: item.documentPage || 0,
+                articleName: item.articleName || 'Unknown Document',
+              });
+            } else {
+              // Silently clean up metadata in storage
+              try {
+                const matchClip = clips.find(c => c.id === item.clipId);
+                if (matchClip && matchClip.elements) {
+                  const elemIdx = matchClip.elements.findIndex(
+                    el => el.documentPath === item.documentPath && el.documentPage === item.documentPage
+                  );
+                  if (elemIdx !== -1) {
+                    await ClipService.removeLinkFromElement(matchClip.id, elemIdx);
+                  }
+                }
+              } catch (e) {
+                // Ignore silent cleanup errors
+              }
+            }
+          }
+        }
+        return Array.from(uniqueLinksMap.values());
       };
 
       const insertedCountByClip: Record<string, number> = {};
@@ -841,26 +1003,38 @@ export default function App() {
           // by one blank line. Spacing is then a literal blank line — uniform, not dependent
           // on the (fixed-height-box) height estimate.
           const group: typeof items = [];
-          let groupHeight = 0;
+          let groupLines = 0;
           let j = i;
           while (j < items.length && items[j].type === 'text' && items[j].text) {
-            const h = estimateTextHeight(items[j].text as string);
-            const addH = h + (group.length ? lineHeight : 0); // blank line between clips
+            const tempGroup = [...group, items[j]];
+            const tempCombined = tempGroup.map((g) => g.text).join('\n\n');
+            const tempGroupLines = estimateTextLines(tempCombined);
+            const tempGroupHeight = estimateTextHeight(tempGroupLines);
+            const linkCount = getUniqueLinksSync(tempGroup);
+            const totalBlockHeight = tempGroupHeight + (linkCount * linkSpace);
             if (group.length === 0) {
-              if (h > availHeight) break; // first item alone doesn't fit → split/defer below
-            } else if (groupHeight + addH > availHeight) {
+              if (totalBlockHeight > availHeight) break; // first item alone doesn't fit → split/defer below
+            } else if (totalBlockHeight > availHeight) {
               break;
             }
             group.push(items[j]);
-            groupHeight += addH;
+            groupLines = tempGroupLines;
             j++;
           }
           if (group.length > 0) {
             const combined = group.map((g) => g.text).join('\n\n');
+            const groupHeight = estimateTextHeight(groupLines);
             await insertTextBox(combined, currentY, groupHeight);
             attemptedInserts++;
             group.forEach((g) => { insertedCountByClip[g.clipId] = (insertedCountByClip[g.clipId] || 0) + 1; });
-            currentY += groupHeight + gap;
+            
+            let nextY = currentY + groupLines * lineHeight;
+            const validLinks = await getValidLinksForGroup(group);
+            for (const link of validLinks) {
+              await performInsertLink(link.path, link.page, link.articleName, nextY);
+              nextY += linkSpace;
+            }
+            currentY = validLinks.length > 0 ? nextY : (currentY + groupHeight + gap);
             pageHasContent = true;
             i = j;
             await new Promise(r => setTimeout(r, 300));
@@ -876,26 +1050,51 @@ export default function App() {
 
         // Single text item: fits whole, or split across pages, or defer to a fresh page.
         const t = item.text;
-        const estH = estimateTextHeight(t);
-        if (estH <= availHeight) {
+        const estLines = estimateTextLines(t);
+        const estH = estimateTextHeight(estLines);
+        const singleLinkCount = item.documentPath ? 1 : 0;
+        const totalSingleHeight = estH + (singleLinkCount * linkSpace);
+        if (totalSingleHeight <= availHeight) {
           await insertTextBox(t, currentY, estH);
           attemptedInserts++;
           insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
-          currentY += estH + gap;
+          
+          let nextY = currentY + estLines * lineHeight;
+          let linksInserted = false;
+          if (item.documentPath) {
+            const validLinks = await getValidLinksForGroup([item]);
+            if (validLinks.length > 0) {
+              await performInsertLink(validLinks[0].path, validLinks[0].page, validLinks[0].articleName, nextY);
+              nextY += linkSpace;
+              linksInserted = true;
+            }
+          }
+          currentY = linksInserted ? nextY : (currentY + estH + gap);
           pageHasContent = true;
           i++;
           await new Promise(r => setTimeout(r, 300));
           if (combineInserted) break; // combine handles multi-item via the group; be safe
           continue; // separate mode: keep stacking boxes on this page
         } else {
-          const linesThatFit = Math.floor(availHeight / lineHeight);
+          const linesThatFit = Math.floor((availHeight - (item.documentPath ? linkSpace : 0)) / lineHeight);
           if (linesThatFit < MIN_SPLIT_LINES) { outOfSpace = true; break; } // start fresh next page
           const charBudget = linesThatFit * charsPerLine;
           const [chunk, remainder] = splitTextToFit(t, charBudget);
           if (!chunk) { outOfSpace = true; break; }
-          await insertTextBox(chunk, currentY, linesThatFit * lineHeight);
+          const chunkH = linesThatFit * lineHeight;
+          await insertTextBox(chunk, currentY, chunkH);
           attemptedInserts++;
           if (remainder) { splitRemainder[item.clipId] = remainder; splitOccurred = true; }
+          
+          let nextY = currentY + chunkH + Math.round(lineHeight * 0.3);
+          if (item.documentPath) {
+            const validLinks = await getValidLinksForGroup([item]);
+            if (validLinks.length > 0) {
+              await performInsertLink(validLinks[0].path, validLinks[0].page, validLinks[0].articleName, nextY);
+              nextY += linkSpace;
+            }
+          }
+          currentY = nextY;
           await PluginNoteAPI.saveCurrentNote();
           await new Promise(r => setTimeout(r, 300));
           break; // page full
@@ -1020,7 +1219,12 @@ export default function App() {
           onClipText={async () => {
             setShowPromptDialog(false);
             await ClipService.setPromptText('');
-            await ClipService.addClip(promptText, deriveArticleName(currentFilePath));
+            await ClipService.addClip(
+              promptText,
+              deriveArticleName(currentFilePath),
+              currentFilePath || undefined,
+              currentPageNum
+            );
             ToastAndroid.show('Clipped as Text!', ToastAndroid.SHORT);
             const { PluginManager } = require('sn-plugin-lib');
             PluginManager.closePluginView();
@@ -1113,6 +1317,7 @@ export default function App() {
           isSelectionMode={isSelectionMode}
           onCardPress={handleCardPress}
           onCardLongPress={handleCardLongPress}
+          onOpenSource={handleOpenSource}
         />
 
         {/* Footer Actions Area */}
@@ -1199,6 +1404,18 @@ export default function App() {
           onClose={() => setIsSettingsOpen(false)}
         />
       )}
+      {/* Confirmation Dialog for Broken Links */}
+      <ConfirmationDialog
+        visible={showConfirmDialog}
+        title={confirmTitle}
+        description={confirmDescription}
+        confirmLabel="Remove Link"
+        cancelLabel="Keep Link"
+        onConfirm={() => {
+          onConfirmCallback?.fn();
+        }}
+        onCancel={() => setShowConfirmDialog(false)}
+      />
     </SafeAreaView>
   );
 }

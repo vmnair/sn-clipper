@@ -88,7 +88,7 @@ export class ClipService {
   /**
    * Append a new clip to the end, update storage, and sync system clipboard.
    */
-  static async addClip(text: string, articleName: string): Promise<number> {
+  static async addClip(text: string, articleName: string, documentPath?: string, documentPage?: number): Promise<number> {
     await this.init();
     if (!text || text.trim() === '') {
       return this.clips.length;
@@ -102,11 +102,20 @@ export class ClipService {
       .replace(/\s+/g, ' ') // Collapse multiple spaces/tabs into a single space
       .trim();
 
+    const cleanArticleName = articleName.trim() || 'Unknown Document';
     const newClip: ClipItem = {
       id: this.genId(),
       text: cleanedText,
-      elements: [{ type: 'text', text: cleanedText }],
-      articleName: articleName.trim() || 'Unknown Document',
+      elements: [{
+        type: 'text',
+        text: cleanedText,
+        ...(documentPath !== undefined && {
+          documentPath,
+          ...(documentPage !== undefined && { documentPage }),
+          ...(cleanArticleName !== undefined && { articleName: cleanArticleName }),
+        }),
+      }],
+      articleName: cleanArticleName,
       timestamp: Date.now(),
     };
 
@@ -123,17 +132,35 @@ export class ClipService {
   /**
    * Add a new image clip, update storage, and notify listeners.
    */
-  static async addImageClip(imagePath: string, articleName: string, width?: number, height?: number): Promise<number> {
+  static async addImageClip(
+    imagePath: string,
+    articleName: string,
+    width?: number,
+    height?: number,
+    documentPath?: string,
+    documentPage?: number
+  ): Promise<number> {
     await this.init();
     if (!imagePath) {
       return this.clips.length;
     }
 
+    const cleanArticleName = articleName.trim() || 'Unknown Document';
     const newClip: ClipItem = {
       id: this.genId(),
       text: '', // Pure image clip starts with empty text description
-      elements: [{ type: 'image', imagePath, width, height }],
-      articleName: articleName.trim() || 'Unknown Document',
+      elements: [{
+        type: 'image',
+        imagePath,
+        ...(width !== undefined && { width }),
+        ...(height !== undefined && { height }),
+        ...(documentPath !== undefined && {
+          documentPath,
+          ...(documentPage !== undefined && { documentPage }),
+          ...(cleanArticleName !== undefined && { articleName: cleanArticleName }),
+        }),
+      }],
+      articleName: cleanArticleName,
       timestamp: Date.now(),
     };
 
@@ -255,7 +282,7 @@ export class ClipService {
       id: this.genId(),
       text: el.type === 'text' ? (el.text || '') : '',
       elements: [{ ...el }],
-      articleName: clip.articleName,
+      articleName: el.articleName || clip.articleName,
       timestamp: baseTs + i, // preserve order within the list
     }));
 
@@ -441,5 +468,21 @@ export class ClipService {
 
   static async getPromptText(): Promise<string> {
     return await StorageService.getPromptText();
+  }
+
+  /**
+   * Remove the link metadata from a specific element within a clip.
+   */
+  static async removeLinkFromElement(clipId: string, elementIndex: number): Promise<void> {
+    await this.init();
+    const clip = this.clips.find(c => c.id === clipId);
+    if (!clip || !clip.elements || elementIndex < 0 || elementIndex >= clip.elements.length) return;
+
+    delete clip.elements[elementIndex].documentPath;
+    delete clip.elements[elementIndex].documentPage;
+    delete clip.elements[elementIndex].articleName;
+
+    await StorageService.saveClips(this.clips);
+    this.notifyListeners();
   }
 }

@@ -8,6 +8,9 @@ export interface ClipSubElement {
   imagePath?: string;
   width?: number; // Image pixel width (image elements only), captured at crop time
   height?: number; // Image pixel height (image elements only)
+  documentPath?: string; // Absolute path to original source file
+  documentPage?: number; // 0-indexed page index in the source file
+  articleName?: string;  // Specific document name for this element
 }
 
 export interface ClipItem {
@@ -51,6 +54,18 @@ export class StorageService {
           // Migration logic: if elements array is missing, initialize it with a single text element
           if (!clip.elements) {
             clip.elements = [{ type: 'text', text: clip.text || '' }];
+          }
+          // Move parent-level document tracking fields (legacy clips) to first sub-element
+          if (clip.documentPath && clip.elements.length > 0) {
+            clip.elements[0].documentPath = clip.documentPath;
+            if (clip.documentPage !== undefined) {
+              clip.elements[0].documentPage = clip.documentPage;
+            }
+            if (clip.articleName) {
+              clip.elements[0].articleName = clip.articleName;
+            }
+            delete clip.documentPath;
+            delete clip.documentPage;
           }
           // If flat text is missing (e.g. pure image clip or corrupted state), populate it from text elements
           if (clip.text === undefined) {

@@ -33,9 +33,10 @@ interface ClipCardProps {
   isSelectionMode: boolean;
   onPress: () => void;
   onLongPress: () => void;
+  onOpenSource?: (clip: ClipItem, element: any, elementIndex: number) => void;
 }
 
-export function ClipCard({ clip, isSelected, isSelectionMode, onPress, onLongPress }: ClipCardProps) {
+export function ClipCard({ clip, isSelected, isSelectionMode, onPress, onLongPress, onOpenSource }: ClipCardProps) {
   return (
     <Pressable
       onPress={onPress}
@@ -55,23 +56,54 @@ export function ClipCard({ clip, isSelected, isSelectionMode, onPress, onLongPre
           )}
           <Text style={styles.clipIndex}>{formatDate(clip.timestamp)}</Text>
         </View>
-        <Text style={styles.articleName} numberOfLines={1}>
-          {clip.articleName}
-        </Text>
+        {(() => {
+          const firstSrcIdx = clip.elements ? clip.elements.findIndex(el => !!el.documentPath) : -1;
+          if (firstSrcIdx !== -1) {
+            const firstSrc = clip.elements[firstSrcIdx];
+            const pageNum = firstSrc.documentPage !== undefined ? firstSrc.documentPage + 1 : 1;
+            const docName = firstSrc.articleName || clip.articleName;
+            return (
+              <View style={styles.headerSourceRow}>
+                <Text style={styles.articleName} numberOfLines={1}>
+                  {docName} (p. {pageNum})
+                </Text>
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    onOpenSource?.(clip, firstSrc, firstSrcIdx);
+                  }}
+                  style={styles.jumpButton}
+                  testID="jump-btn"
+                >
+                  <Image
+                    source={require('../../assets/icon/jump.png')}
+                    style={styles.jumpIcon}
+                  />
+                </Pressable>
+              </View>
+            );
+          } else {
+            return (
+              <Text style={styles.articleName} numberOfLines={1}>
+                {clip.articleName}
+              </Text>
+            );
+          }
+        })()}
       </View>
       {clip.elements && clip.elements.map((elem, idx) => {
-        if (elem.type === 'text' && elem.text) {
-          return <Text key={idx} style={styles.clipText}>{elem.text}</Text>;
-        } else if (elem.type === 'image' && elem.imagePath) {
-          return (
-            <Image
-              key={idx}
-              source={{ uri: 'file://' + elem.imagePath }}
-              style={styles.clipImage}
-            />
-          );
-        }
-        return null;
+        return (
+          <View key={idx} style={styles.elementContainer}>
+            {elem.type === 'text' && elem.text ? (
+              <Text style={styles.clipText}>{elem.text}</Text>
+            ) : elem.type === 'image' && elem.imagePath ? (
+              <Image
+                source={{ uri: 'file://' + elem.imagePath }}
+                style={styles.clipImage}
+              />
+            ) : null}
+          </View>
+        );
       })}
     </Pressable>
   );
@@ -131,7 +163,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666666',
     fontStyle: 'italic',
-    maxWidth: '45%',
+    flexShrink: 1,
+    textAlign: 'right',
+  },
+  headerSourceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    maxWidth: '65%',
   },
   clipText: {
     fontSize: 18,
@@ -146,5 +186,18 @@ const styles = StyleSheet.create({
     borderColor: '#e0e0e0',
     marginTop: 6,
     backgroundColor: '#f9f9f9',
+  },
+  elementContainer: {
+    marginBottom: 8,
+  },
+  jumpButton: {
+    padding: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  jumpIcon: {
+    width: 20,
+    height: 20,
+    resizeMode: 'contain',
   },
 });

@@ -97,4 +97,127 @@ describe('StorageService', () => {
     expect(await StorageService.getCombineInserted()).toBe(false);
   });
 
+  it('should migrate legacy parent-level documentPath/documentPage to first sub-element on load', async () => {
+    const legacyClips = [
+      {
+        id: 'legacy-id',
+        text: 'Legacy highlight text content',
+        articleName: 'Legacy Doc',
+        timestamp: 99999,
+        documentPath: '/sdcard/Books/nlp.pdf',
+        documentPage: 12,
+      },
+    ];
+
+    await AsyncStorage.setItem('sn_clipper_aggregated_clips', JSON.stringify(legacyClips));
+
+    const loaded = await StorageService.loadClips();
+    expect(loaded.length).toBe(1);
+    expect(loaded[0].elements).toEqual([{
+      type: 'text',
+      text: 'Legacy highlight text content',
+      documentPath: '/sdcard/Books/nlp.pdf',
+      documentPage: 12,
+      articleName: 'Legacy Doc',
+    }]);
+    expect((loaded[0] as any).documentPath).toBeUndefined();
+    expect((loaded[0] as any).documentPage).toBeUndefined();
+  });
+
+  describe('StorageService Error Handling', () => {
+    let originalSetItem: any;
+    let originalGetItem: any;
+
+    beforeAll(() => {
+      originalSetItem = AsyncStorage.setItem;
+      originalGetItem = AsyncStorage.getItem;
+    });
+
+    afterAll(() => {
+      AsyncStorage.setItem = originalSetItem;
+      AsyncStorage.getItem = originalGetItem;
+    });
+
+    it('should catch errors when saveClips fails', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      AsyncStorage.setItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage set error'));
+      await StorageService.saveClips([]);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('should catch errors and return empty array when loadClips fails', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      AsyncStorage.getItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage get error'));
+      const loaded = await StorageService.loadClips();
+      expect(loaded).toEqual([]);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('should catch errors when setLaunchMode or getLaunchMode fails', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      AsyncStorage.setItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
+      await StorageService.setLaunchMode('crop');
+      expect(consoleErrorSpy).toHaveBeenCalled();
+
+      AsyncStorage.getItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
+      const mode = await StorageService.getLaunchMode();
+      expect(mode).toBe('normal');
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('should catch errors when setPromptText or getPromptText fails', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      AsyncStorage.setItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
+      await StorageService.setPromptText('test');
+      expect(consoleErrorSpy).toHaveBeenCalled();
+
+      AsyncStorage.getItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
+      const text = await StorageService.getPromptText();
+      expect(text).toBe('');
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('should catch errors when setAutoRemoveInserted or getAutoRemoveInserted fails', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      AsyncStorage.setItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
+      await StorageService.setAutoRemoveInserted(false);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+
+      AsyncStorage.getItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
+      const val = await StorageService.getAutoRemoveInserted();
+      expect(val).toBe(true);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('should catch errors when setInsertFontSize or getInsertFontSize fails', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      AsyncStorage.setItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
+      await StorageService.setInsertFontSize(44);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+
+      AsyncStorage.getItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
+      const size = await StorageService.getInsertFontSize();
+      expect(size).toBe(44);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('should catch errors when setCombineInserted or getCombineInserted fails', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      AsyncStorage.setItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
+      await StorageService.setCombineInserted(false);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+
+      AsyncStorage.getItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
+      const val = await StorageService.getCombineInserted();
+      expect(val).toBe(true);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      consoleErrorSpy.mockRestore();
+    });
+  });
 });

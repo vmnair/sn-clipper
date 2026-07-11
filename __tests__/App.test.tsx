@@ -2,7 +2,7 @@ import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import App from '../src/App';
 import { ClipService } from '../src/services/ClipService';
-import { StorageService } from '../src/services/StorageService';
+import { StorageService, ClipItem } from '../src/services/StorageService';
 import { Clipboard, ToastAndroid, Text, Pressable, TextInput } from 'react-native';
 import { PluginManager } from 'sn-plugin-lib';
 
@@ -71,6 +71,7 @@ jest.mock('react-native', () => {
     NativeModules: {
       ImageCropModule: {
         cropImage: jest.fn().mockResolvedValue(true),
+        openFileDirectly: jest.fn().mockResolvedValue(true),
       },
     },
     AppState: {
@@ -110,9 +111,12 @@ jest.mock('sn-plugin-lib', () => ({
     saveCurrentNote: jest.fn().mockResolvedValue({ success: true }),
     insertText: jest.fn().mockResolvedValue({ success: true }),
     insertImage: jest.fn().mockResolvedValue({ success: true, result: { uuid: 'mock-uuid', picture: { rect: { left: 0, top: 0, right: 300, bottom: 300 } } } }),
+    insertTextLink: jest.fn().mockResolvedValue({ success: true }),
   },
   FileUtils: {
     deleteFile: jest.fn().mockResolvedValue(true),
+    exists: jest.fn().mockResolvedValue(true),
+    listFiles: jest.fn().mockResolvedValue([]),
   },
   NativePluginManager: {
     invalidatePluginView: jest.fn(),
@@ -1085,5 +1089,284 @@ describe('App Component', () => {
     // Should proceed to crop workspace
     const workspace = root.root.find((el) => typeof el.props.onLayout === 'function');
     expect(workspace).toBeTruthy();
+  });
+
+  it('inserts native TextLinks in runInsertClips when clips have document metadata', async () => {
+    const { PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+
+    const testClips: ClipItem[] = [
+      {
+        id: 'c1',
+        text: 'Link highlight text',
+        elements: [{
+          type: 'text',
+          text: 'Link highlight text',
+          documentPath: '/sdcard/Books/physics.pdf',
+          documentPage: 4,
+          articleName: 'physics.pdf',
+        }],
+        articleName: 'physics.pdf',
+        timestamp: 100,
+      },
+    ];
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    expect(insertBtn).toBeTruthy();
+
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    expect(PluginNoteAPI.insertText).toHaveBeenCalled();
+    expect(PluginNoteAPI.insertTextLink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destPath: '/sdcard/Books/physics.pdf',
+        destPage: 4,
+        linkType: 2,
+        fullText: '[physics, p. 5 ↗]',
+      })
+    );
+  });
+
+  it('skips TextLinks in runInsertClips and cleans up storage when file is missing', async () => {
+    const { PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(false);
+
+    const testClips: ClipItem[] = [
+      {
+        id: 'c2',
+        text: 'Missing file highlight text',
+        elements: [{
+          type: 'text',
+          text: 'Missing file highlight text',
+          documentPath: '/sdcard/Books/deleted.pdf',
+          documentPage: 9,
+          articleName: 'deleted.pdf',
+        }],
+        articleName: 'deleted.pdf',
+        timestamp: 200,
+      },
+    ];
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const removeLinkSpy = jest.spyOn(ClipService, 'removeLinkFromElement');
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    expect(PluginNoteAPI.insertText).toHaveBeenCalled();
+    expect(PluginNoteAPI.insertTextLink).not.toHaveBeenCalled();
+    expect(removeLinkSpy).toHaveBeenCalledWith('c2', 0);
+  });
+
+  it('calls ImageCropModule.openFileDirectly with path and page when clicking Jump on an existing file', async () => {
+    const { FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+
+    const testClips: ClipItem[] = [
+      {
+        id: 'c4',
+        text: 'Existing file highlight',
+        elements: [{
+          type: 'text',
+          text: 'Existing file highlight',
+          documentPath: '/sdcard/Books/existing.pdf',
+          documentPage: 5,
+          articleName: 'existing.pdf',
+        }],
+        articleName: 'existing.pdf',
+        timestamp: 400,
+      },
+    ];
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const root = await renderApp();
+
+    const jumpBtn = root.root.find((el: any) => {
+      return el.type === 'Pressable' && el.props.testID === 'jump-btn';
+    });
+    expect(jumpBtn).toBeTruthy();
+
+    await act(async () => {
+      await jumpBtn.props.onPress({ stopPropagation: () => {} });
+    });
+
+    const { NativeModules } = require('react-native');
+    expect(NativeModules.ImageCropModule.openFileDirectly).toHaveBeenCalledWith(
+      '/sdcard/Books/existing.pdf',
+      5
+    );
+  });
+
+  it('does not call openFileDirectly and shows toast when clicking Jump on the already opened page', async () => {
+    const { FileUtils, PluginCommAPI } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/existing.pdf' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 5 });
+
+    const testClips: ClipItem[] = [
+      {
+        id: 'c5',
+        text: 'Existing file highlight',
+        elements: [{
+          type: 'text',
+          text: 'Existing file highlight',
+          documentPath: '/sdcard/Books/existing.pdf',
+          documentPage: 5,
+          articleName: 'existing.pdf',
+        }],
+        articleName: 'existing.pdf',
+        timestamp: 500,
+      },
+    ];
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const root = await renderApp();
+
+    const jumpBtn = root.root.find((el: any) => {
+      return el.type === 'Pressable' && el.props.testID === 'jump-btn';
+    });
+    expect(jumpBtn).toBeTruthy();
+
+    await act(async () => {
+      await jumpBtn.props.onPress({ stopPropagation: () => {} });
+    });
+
+    const { NativeModules, ToastAndroid } = require('react-native');
+    expect(NativeModules.ImageCropModule.openFileDirectly).not.toHaveBeenCalled();
+    expect(ToastAndroid.show).toHaveBeenCalledWith('Already on this page.', ToastAndroid.SHORT);
+
+    // Restore default mocks
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/MyNote.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 0 });
+  });
+
+  it('calls openFileDirectly and does not show toast when clicking Jump on same page of an EPUB file', async () => {
+    const { FileUtils, PluginCommAPI } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/existing.epub' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 5 });
+
+    const testClips: ClipItem[] = [
+      {
+        id: 'c6',
+        text: 'EPUB highlight',
+        elements: [{
+          type: 'text',
+          text: 'EPUB highlight',
+          documentPath: '/sdcard/Books/existing.epub',
+          documentPage: 5,
+          articleName: 'existing.epub',
+        }],
+        articleName: 'existing.epub',
+        timestamp: 600,
+      },
+    ];
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const root = await renderApp();
+
+    const jumpBtn = root.root.find((el: any) => {
+      return el.type === 'Pressable' && el.props.testID === 'jump-btn';
+    });
+    expect(jumpBtn).toBeTruthy();
+
+    await act(async () => {
+      await jumpBtn.props.onPress({ stopPropagation: () => {} });
+    });
+
+    const { NativeModules, ToastAndroid } = require('react-native');
+    expect(NativeModules.ImageCropModule.openFileDirectly).toHaveBeenCalledWith(
+      '/sdcard/Books/existing.epub',
+      5
+    );
+    expect(ToastAndroid.show).not.toHaveBeenCalledWith('Already on this page.', ToastAndroid.SHORT);
+
+    // Restore default mocks
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/MyNote.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 0 });
+  });
+
+  it('runs sweepOrphanCaptures on start and deletes stale files', async () => {
+    const { FileUtils } = require('sn-plugin-lib');
+    const deleteSpy = jest.spyOn(FileUtils, 'deleteFile').mockResolvedValue(true);
+    FileUtils.listFiles.mockResolvedValue([
+      '/sdcard/Supernote/Plugins/SnClipper/reader_shot_1000000000000.png',
+      '/sdcard/Supernote/Plugins/SnClipper/temp_crop_page_1000000000000.png',
+      '/sdcard/Supernote/Plugins/SnClipper/clip_1000000000000.png',
+      '/sdcard/Supernote/Plugins/SnClipper/unrelated.png',
+    ]);
+
+    await renderApp();
+
+    expect(deleteSpy).toHaveBeenCalledWith('/sdcard/Supernote/Plugins/SnClipper/reader_shot_1000000000000.png');
+    expect(deleteSpy).toHaveBeenCalledWith('/sdcard/Supernote/Plugins/SnClipper/temp_crop_page_1000000000000.png');
+    expect(deleteSpy).toHaveBeenCalledWith('/sdcard/Supernote/Plugins/SnClipper/clip_1000000000000.png');
+    expect(deleteSpy).not.toHaveBeenCalledWith('/sdcard/Supernote/Plugins/SnClipper/unrelated.png');
+    deleteSpy.mockRestore();
+    // Reset listFiles mock
+    FileUtils.listFiles.mockResolvedValue([]);
+  });
+
+  it('triggers confirmation dialog when clicking Jump on missing file and removes link', async () => {
+    const { FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(false);
+
+    const testClips: ClipItem[] = [
+      {
+        id: 'c3',
+        text: 'Missing file highlight',
+        elements: [{
+          type: 'text',
+          text: 'Missing file highlight',
+          documentPath: '/sdcard/Books/missing.pdf',
+          documentPage: 2,
+          articleName: 'missing.pdf',
+        }],
+        articleName: 'missing.pdf',
+        timestamp: 300,
+      },
+    ];
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const removeLinkSpy = jest.spyOn(ClipService, 'removeLinkFromElement');
+    const root = await renderApp();
+
+    // Find the Jump button inside ClipCard
+    const jumpBtn = root.root.find((el: any) => {
+      return el.type === 'Pressable' && el.props.testID === 'jump-btn';
+    });
+    expect(jumpBtn).toBeTruthy();
+
+    await act(async () => {
+      await jumpBtn.props.onPress({ stopPropagation: () => {} });
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // Confirmation dialog should be visible. Find the Remove Link button inside the dialog.
+    const removeLinkBtn = root.root.find(
+      (el: any) =>
+        el.props.style &&
+        el.props.onPress &&
+        el.findAllByType(Text).some((t: any) => t.props.children === 'Remove Link')
+    );
+    expect(removeLinkBtn).toBeTruthy();
+
+    await act(async () => {
+      await removeLinkBtn.props.onPress();
+    });
+
+    expect(removeLinkSpy).toHaveBeenCalledWith('c3', 0);
   });
 });

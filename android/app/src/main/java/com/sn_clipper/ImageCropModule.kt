@@ -13,9 +13,92 @@ import java.io.FileOutputStream
 import java.io.File
 import java.util.concurrent.TimeUnit
 
+import android.content.Intent
+import android.content.ComponentName
+import android.net.Uri
+import android.webkit.MimeTypeMap
+import android.os.StrictMode
+
 class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     override fun getName(): String {
         return "ImageCropModule"
+    }
+
+    @ReactMethod
+    fun openFileDirectly(filePath: String, page: Int, promise: Promise) {
+        try {
+            val cleanPath = if (filePath.startsWith("file://")) filePath.substring(7) else filePath
+            val file = File(cleanPath)
+            if (!file.exists()) {
+                promise.reject("FILE_NOT_FOUND", "File does not exist: $cleanPath")
+                return
+            }
+
+            // Bypass StrictMode file:// URI exposure check
+            val builder = StrictMode.VmPolicy.Builder()
+            StrictMode.setVmPolicy(builder.build())
+
+            val ext = file.extension.lowercase()
+            val mimeType = when (ext) {
+                "pdf" -> "application/pdf"
+                "epub" -> "application/epub+zip"
+                "txt" -> "text/plain"
+                "note" -> "*/*"
+                else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
+            }
+
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(Uri.fromFile(file), mimeType)
+                if (ext == "epub") {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                } else {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                }
+
+                // Set all possible path extras
+                putExtra("only_open_file", file.absolutePath)
+                putExtra("filePath", file.absolutePath)
+                putExtra("path", file.absolutePath)
+                putExtra("note_path", file.absolutePath)
+                putExtra("toUrl", file.absolutePath)
+                putExtra("to_url", file.absolutePath)
+
+                // Set all possible page number extras (0-indexed and 1-indexed)
+                putExtra("page", page)
+                putExtra("pageIndex", page)
+                putExtra("destPage", page)
+                putExtra("targetPage", page)
+                putExtra("page_index", page)
+                putExtra("currentPage", page)
+                putExtra("select_page", page)
+                putExtra("toPage", page)
+                putExtra("to_page", page)
+                
+                putExtra("page_num", page + 1)
+                putExtra("pageNum", page + 1)
+                putExtra("toPageNum", page + 1)
+                putExtra("to_page_num", page + 1)
+
+                // Set fromUrl/fromPage transition context to register link history
+                putExtra("fromUrl", "/storage/emulated/0/Note/Clipper.note")
+                putExtra("fromPage", 0)
+                putExtra("fromPageId", "P20260710000000000000000000000000")
+                putExtra("type", 1)
+                putExtra("status", 1)
+
+                // Explicitly set components to bypass app chooser and launch Ratta reader/editor directly
+                if (ext == "note") {
+                    component = ComponentName("com.ratta.supernote.note", "com.ratta.supernote.note.view.NoteInsidePagesActivity")
+                } else {
+                    component = ComponentName("com.supernote.document", "com.supernote.document.document.DocumentActivity")
+                }
+            }
+
+            reactApplicationContext.startActivity(intent)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message, e)
+        }
     }
 
     @ReactMethod

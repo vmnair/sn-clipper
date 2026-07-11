@@ -1,5 +1,5 @@
 import { ClipService } from '../src/services/ClipService';
-import { StorageService } from '../src/services/StorageService';
+import { StorageService, ClipItem } from '../src/services/StorageService';
 import { PluginManager } from 'sn-plugin-lib';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -255,7 +255,7 @@ describe('ClipService', () => {
     });
 
     it('deletes the whole clip when all elements were inserted', async () => {
-      const mockClips = [
+      const mockClips: ClipItem[] = [
         {
           id: 'solo',
           text: 'All of it',
@@ -273,7 +273,7 @@ describe('ClipService', () => {
     });
 
     it('carries over the remainder text of a split element (count 0)', async () => {
-      const mockClips = [
+      const mockClips: ClipItem[] = [
         {
           id: 'long',
           text: 'First half. Second half.',
@@ -297,7 +297,7 @@ describe('ClipService', () => {
 
   describe('unmergeClip', () => {
     it('explodes a multi-element clip into one clip per element, in order', async () => {
-      const mockClips = [
+      const mockClips: ClipItem[] = [
         {
           id: 'merged',
           text: 'A\n​\nC',
@@ -333,7 +333,7 @@ describe('ClipService', () => {
     });
 
     it('generates unique ids for the exploded pieces', async () => {
-      const mockClips = [
+      const mockClips: ClipItem[] = [
         {
           id: 'merged',
           text: 'a\n\nb\n\nc',
@@ -355,7 +355,7 @@ describe('ClipService', () => {
     });
 
     it('is a no-op for a single-element clip', async () => {
-      const mockClips = [
+      const mockClips: ClipItem[] = [
         { id: 'solo', text: 'A', elements: [{ type: 'text', text: 'A' }], articleName: 'Doc A', timestamp: 100 },
       ];
       jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
@@ -364,6 +364,97 @@ describe('ClipService', () => {
       const pieces = await ClipService.unmergeClip('solo');
       expect(pieces).toBe(0);
       expect(ClipService.getClipsSync().length).toBe(1);
+    });
+  });
+
+  describe('Document context and Link removal', () => {
+    it('should add text clip with document path and page context', async () => {
+      await ClipService.addClip('Hello metadata', 'Book.pdf', '/sdcard/Books/Book.pdf', 5);
+      const clips = ClipService.getClipsSync();
+      expect(clips.length).toBe(1);
+      expect(clips[0].elements[0]).toEqual({
+        type: 'text',
+        text: 'Hello metadata',
+        documentPath: '/sdcard/Books/Book.pdf',
+        documentPage: 5,
+        articleName: 'Book.pdf',
+      });
+    });
+
+    it('should add image clip with document path and page context', async () => {
+      await ClipService.addImageClip('/path/img.png', 'Book.pdf', 300, 200, '/sdcard/Books/Book.pdf', 8);
+      const clips = ClipService.getClipsSync();
+      expect(clips.length).toBe(1);
+      expect(clips[0].elements[0]).toEqual({
+        type: 'image',
+        imagePath: '/path/img.png',
+        width: 300,
+        height: 200,
+        documentPath: '/sdcard/Books/Book.pdf',
+        documentPage: 8,
+        articleName: 'Book.pdf',
+      });
+    });
+
+    it('should preserve element-level document metadata when unmerging clips', async () => {
+      const mockClips: ClipItem[] = [
+        {
+          id: 'merged',
+          text: 'Text A\n​\nText B',
+          elements: [
+            { type: 'text', text: 'Text A', documentPath: '/p/a.pdf', documentPage: 1, articleName: 'Doc A' },
+            { type: 'text', text: 'Text B', documentPath: '/p/b.pdf', documentPage: 2, articleName: 'Doc B' },
+          ],
+          articleName: 'Doc A / Doc B',
+          timestamp: 500,
+        },
+      ];
+      jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+      await ClipService.init();
+
+      await ClipService.unmergeClip('merged');
+      const clips = ClipService.getClipsSync();
+      expect(clips.length).toBe(2);
+      expect(clips[0].elements[0]).toEqual({
+        type: 'text',
+        text: 'Text A',
+        documentPath: '/p/a.pdf',
+        documentPage: 1,
+        articleName: 'Doc A',
+      });
+      expect(clips[0].articleName).toBe('Doc A');
+
+      expect(clips[1].elements[0]).toEqual({
+        type: 'text',
+        text: 'Text B',
+        documentPath: '/p/b.pdf',
+        documentPage: 2,
+        articleName: 'Doc B',
+      });
+      expect(clips[1].articleName).toBe('Doc B');
+    });
+
+    it('should strip metadata from element via removeLinkFromElement', async () => {
+      const mockClips: ClipItem[] = [
+        {
+          id: 'clip1',
+          text: 'Hello world',
+          elements: [
+            { type: 'text', text: 'Hello world', documentPath: '/p/a.pdf', documentPage: 1, articleName: 'Doc A' },
+          ],
+          articleName: 'Doc A',
+          timestamp: 100,
+        },
+      ];
+      jest.spyOn(StorageService, 'loadClips').mockResolvedValue(mockClips);
+      await ClipService.init();
+
+      await ClipService.removeLinkFromElement('clip1', 0);
+      const clips = ClipService.getClipsSync();
+      expect(clips[0].elements[0]).toEqual({
+        type: 'text',
+        text: 'Hello world',
+      });
     });
   });
 });

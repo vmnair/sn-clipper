@@ -56,16 +56,23 @@ PluginManager.registerButtonListener({
           if (words.length > 5) {
             // Case A: > 5 words -> Auto-clip as text (Completely Silent)
             let articleName = 'Unknown Document';
+            let documentPath = undefined;
+            let documentPage = undefined;
             try {
               const fileRes = await PluginCommAPI.getCurrentFilePath();
               if (fileRes.success && fileRes.result) {
-                articleName = deriveArticleName(fileRes.result);
+                documentPath = fileRes.result;
+                articleName = deriveArticleName(documentPath);
+              }
+              const pageRes = await PluginCommAPI.getCurrentPageNum();
+              if (pageRes.success && pageRes.result !== undefined && pageRes.result !== null) {
+                documentPage = pageRes.result;
               }
             } catch (fileErr) {
-              console.error('Failed to get current file name:', fileErr);
+              console.error('Failed to get current file metadata:', fileErr);
             }
             
-            await ClipService.addClip(selectedText, articleName);
+            await ClipService.addClip(selectedText, articleName, documentPath, documentPage);
             ToastAndroid.show('Clipped as Text!', ToastAndroid.SHORT);
           } else {
             // Case B: <= 5 words -> Prompt user (launches UI programmatically)
