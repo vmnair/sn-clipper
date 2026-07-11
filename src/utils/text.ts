@@ -11,6 +11,50 @@
  * `chunk` is right-trimmed and `remainder` is left-trimmed so the split point doesn't leave
  * stray spaces.
  */
+/**
+ * Estimate how many lines `text` occupies when greedily word-wrapped into lines of at most
+ * `charsPerLine` characters — matching how the note renderer breaks on word boundaries.
+ *
+ * A naive `ceil(length / charsPerLine)` assumes perfect character packing and so under-counts:
+ * real word-wrapping wastes the space at the end of each line where the next word doesn't fit.
+ * That under-count is what made inserted text boxes too short and clipped their last line.
+ * Blank paragraphs (from `\n\n` between combined clips) count as one line each.
+ */
+export function measureWrappedText(text: string, charsPerLine: number): { lines: number; lastLineChars: number } {
+  if (!text) return { lines: 0, lastLineChars: 0 };
+  const cpl = Math.max(1, Math.floor(charsPerLine));
+  let total = 0;
+  let lastCol = 0; // chars on the final line of the whole text
+  for (const para of text.split('\n')) {
+    const words = para.split(' ').filter(w => w.length > 0);
+    if (words.length === 0) { total += 1; lastCol = 0; continue; } // blank line
+    let lines = 1;
+    let col = 0; // chars used on the current line
+    for (const word of words) {
+      if (col !== 0 && col + 1 + word.length <= cpl) {
+        col += 1 + word.length; // fits after a space
+        continue;
+      }
+      if (col !== 0) { lines += 1; col = 0; } // wrap to a fresh line
+      if (word.length <= cpl) {
+        col = word.length;
+      } else {
+        // A single token longer than a line wraps within itself across extra lines.
+        const extra = Math.floor((word.length - 1) / cpl);
+        lines += extra;
+        col = word.length - extra * cpl;
+      }
+    }
+    total += lines;
+    lastCol = col;
+  }
+  return { lines: total, lastLineChars: lastCol };
+}
+
+export function countWrappedLines(text: string, charsPerLine: number): number {
+  return measureWrappedText(text, charsPerLine).lines;
+}
+
 export function splitTextToFit(text: string, charBudget: number): [string, string] {
   if (charBudget <= 0 || text.length <= charBudget) {
     return [text, ''];

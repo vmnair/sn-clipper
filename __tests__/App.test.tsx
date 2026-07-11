@@ -354,7 +354,7 @@ describe('App Component', () => {
     expect(ToastAndroid.show).toHaveBeenCalledWith('2 clip(s) merged!', ToastAndroid.SHORT);
   });
 
-  it('combines text clips into one text box (combine on by default)', async () => {
+  it('combines text clips into one text box when combine is turned on', async () => {
     const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     PluginFileAPI.getElements
       .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
@@ -369,6 +369,11 @@ describe('App Component', () => {
     await ClipService.addClip('Second clip.', 'Doc A');
 
     const root = await renderApp();
+    // Combine is off by default now — turn it on for this test.
+    const settingsBtn = root.root.findByProps({ testID: 'settings-btn' });
+    await act(async () => { settingsBtn.props.onPress(); });
+    await act(async () => { root.root.findByProps({ testID: 'setting-combine' }).props.onPress(); });
+
     const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
     await act(async () => {
       await insertBtn.props.onPress();
@@ -382,7 +387,38 @@ describe('App Component', () => {
     expect(ClipService.getClipsSync().length).toBe(0); // both removed
   });
 
-  it('inserts each text clip as its own box when combine is turned off', async () => {
+  it('uses labeled links in combine mode so stacked links stay identifiable', async () => {
+    const { PluginNoteAPI, PluginFileAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({ success: true, result: [] })
+      .mockResolvedValue({
+        success: true,
+        result: [{ uuid: 'combined', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 400 } } }],
+      });
+
+    const testClips: ClipItem[] = [
+      { id: 'k1', text: 'From physics', elements: [{ type: 'text', text: 'From physics', documentPath: '/sdcard/Books/physics.pdf', documentPage: 4, articleName: 'physics.pdf' }], articleName: 'physics.pdf', timestamp: 100 },
+      { id: 'k2', text: 'From biology', elements: [{ type: 'text', text: 'From biology', documentPath: '/sdcard/Books/biology.pdf', documentPage: 9, articleName: 'biology.pdf' }], articleName: 'biology.pdf', timestamp: 200 },
+    ];
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+
+    const root = await renderApp();
+    // Turn combine on.
+    const settingsBtn = root.root.findByProps({ testID: 'settings-btn' });
+    await act(async () => { settingsBtn.props.onPress(); });
+    await act(async () => { root.root.findByProps({ testID: 'setting-combine' }).props.onPress(); });
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => { await insertBtn.props.onPress(); });
+
+    // Both sources get a labeled link (not a bare icon).
+    const linkTexts = (PluginNoteAPI.insertTextLink as jest.Mock).mock.calls.map((c) => c[0].showText);
+    expect(linkTexts).toContain('[physics, p. 5 ↗]');
+    expect(linkTexts).toContain('[biology, p. 10 ↗]');
+  });
+
+  it('inserts each text clip as its own box (combine off by default)', async () => {
     const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     PluginFileAPI.getElements
       .mockResolvedValueOnce({ success: true, result: [] })
@@ -399,12 +435,7 @@ describe('App Component', () => {
 
     const root = await renderApp();
 
-    // Turn combine off in settings.
-    const settingsBtn = root.root.findByProps({ testID: 'settings-btn' });
-    await act(async () => { settingsBtn.props.onPress(); });
-    const combineRow = root.root.findByProps({ testID: 'setting-combine' });
-    await act(async () => { combineRow.props.onPress(); });
-
+    // Combine is off by default — no toggle needed.
     const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
     await act(async () => {
       await insertBtn.props.onPress();
@@ -569,6 +600,39 @@ describe('App Component', () => {
     expect(sentences.endsWith(clips[0].text)).toBe(true); // remainder is the tail
   });
 
+  it('defers the whole clip (no split) when auto-remove is off and it fits a fresh page', async () => {
+    const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    // Keep clips intact.
+    jest.spyOn(StorageService, 'getAutoRemoveInserted').mockResolvedValue(false);
+    // Existing content leaves almost no room on this page (bottom near the 1872 page height).
+    PluginFileAPI.getElements.mockResolvedValue({
+      success: true,
+      result: [
+        { uuid: 'existing', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 1800 } } },
+      ],
+    });
+
+    await ClipService.addClip('A normal-length clip that easily fits on a fresh page.', 'Doc A');
+    const originalLen = ClipService.getClipsSync()[0].text.length;
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // No partial chunk is inserted — the whole clip is deferred to a new page…
+    expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
+    expect(ToastAndroid.show).toHaveBeenCalledWith(
+      'More clips remain. Turn to a new page, then Insert again to continue.',
+      ToastAndroid.LONG
+    );
+    // …and it stays in Clipper intact (not trimmed).
+    const clips = ClipService.getClipsSync();
+    expect(clips.length).toBe(1);
+    expect(clips[0].text.length).toBe(originalLen);
+  });
+
   it('defers an image when the page already has one, keeping it in Clipper', async () => {
     const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     // Scan finds a picture already on the page (from a previous insert).
@@ -727,10 +791,44 @@ describe('App Component', () => {
       await insertBtn.props.onPress();
     });
 
-    // Insertion should start below title: Y = 100 + 80 + gap (35) = 215
+    // Insertion should start below title: Y = 100 + 80 + gap. gap = round(lineHeight*0.6)
+    // = round(round(44*1.2)*0.6) = round(53*0.6) = 32 → 212.
     expect(PluginNoteAPI.insertText).toHaveBeenCalled();
     const call = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0];
-    expect(call.textRect.top).toBe(215);
+    expect(call.textRect.top).toBe(212);
+  });
+
+  it('ignores a link element with a bogus off-page maxY when calculating starting Y', async () => {
+    // Regression: inserted ↗ link elements return as type 600 with maxY≈16224 on a ~1872-tall
+    // page. Trusting that maxY pushed the start-Y off-page so nothing "fit" → premature
+    // "turn to a new page". The start-Y must come from the real text box (bottom 500), not the link.
+    const { PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({
+        success: true,
+        result: [
+          { uuid: 'tb1', type: 500, status: 0, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 500 } } },
+          { uuid: 'lk1', type: 600, status: 0, maxY: 16224 }, // link with garbage maxY
+        ],
+      })
+      .mockResolvedValue({
+        success: true,
+        result: [
+          { uuid: 'new', type: 500, textBox: { textRect: { left: 100, top: 500, right: 1304, bottom: 600 } } },
+        ],
+      });
+
+    await ClipService.addClip('A fresh snippet to append', 'Doc A');
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => { await insertBtn.props.onPress(); });
+
+    // The clip must actually be inserted (not deferred), just below the text box (~500+gap),
+    // NOT off the page.
+    expect(PluginNoteAPI.insertText).toHaveBeenCalled();
+    const call = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0];
+    expect(call.textRect.top).toBeGreaterThanOrEqual(500);
+    expect(call.textRect.top).toBeLessThan(700);
   });
 
   it('inserts selected clips sequentially into active note', async () => {
@@ -784,6 +882,68 @@ describe('App Component', () => {
     expect(root.root.findByProps({ testID: 'setting-font-small' })).toBeTruthy();
     expect(root.root.findByProps({ testID: 'setting-font-medium' })).toBeTruthy();
     expect(root.root.findByProps({ testID: 'setting-font-large' })).toBeTruthy();
+    // Source-reference toggles are present.
+    expect(root.root.findByProps({ testID: 'setting-show-source' })).toBeTruthy();
+    expect(root.root.findByProps({ testID: 'setting-insert-source-link' })).toBeTruthy();
+  });
+
+  it('resets all settings to defaults via Reset to default', async () => {
+    const root = await renderApp();
+    const settingsBtn = root.root.findByProps({ testID: 'settings-btn' });
+    await act(async () => { settingsBtn.props.onPress(); });
+
+    // Turn a few settings away from their defaults.
+    await act(async () => { root.root.findByProps({ testID: 'setting-combine' }).props.onPress(); });
+    await act(async () => { root.root.findByProps({ testID: 'setting-show-source' }).props.onPress(); });
+    await act(async () => { root.root.findByProps({ testID: 'setting-font-large' }).props.onPress(); });
+    expect(await StorageService.getCombineInserted()).toBe(true); // default off → toggled on
+    expect(await StorageService.getShowSourceInClipper()).toBe(false);
+    expect(await StorageService.getInsertFontSize()).toBe(56);
+
+    // Reset restores every default.
+    await act(async () => { root.root.findByProps({ testID: 'setting-reset' }).props.onPress(); });
+    expect(await StorageService.getCombineInserted()).toBe(false); // back to default (off)
+    expect(await StorageService.getShowSourceInClipper()).toBe(true);
+    expect(await StorageService.getInsertSourceLink()).toBe(true);
+    expect(await StorageService.getAutoRemoveInserted()).toBe(true);
+    expect(await StorageService.getInsertFontSize()).toBe(44);
+  });
+
+  it('persists the source-reference toggles when tapped', async () => {
+    const root = await renderApp();
+    const settingsBtn = root.root.findByProps({ testID: 'settings-btn' });
+    await act(async () => { settingsBtn.props.onPress(); });
+
+    const showSourceRow = root.root.findByProps({ testID: 'setting-show-source' });
+    await act(async () => { showSourceRow.props.onPress(); });
+    expect(await StorageService.getShowSourceInClipper()).toBe(false);
+
+    const linkRow = root.root.findByProps({ testID: 'setting-insert-source-link' });
+    await act(async () => { linkRow.props.onPress(); });
+    expect(await StorageService.getInsertSourceLink()).toBe(false);
+  });
+
+  it('hides the Clipper jump icon when Show-source is off', async () => {
+    jest.spyOn(StorageService, 'getShowSourceInClipper').mockResolvedValue(false);
+    const testClips: ClipItem[] = [
+      {
+        id: 'cs1',
+        text: 'Highlight with a source',
+        elements: [{
+          type: 'text',
+          text: 'Highlight with a source',
+          documentPath: '/sdcard/Books/existing.pdf',
+          documentPage: 5,
+          articleName: 'existing.pdf',
+        }],
+        articleName: 'existing.pdf',
+        timestamp: 100,
+      },
+    ];
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const root = await renderApp();
+
+    expect(root.root.findAllByProps({ testID: 'jump-btn' }).length).toBe(0);
   });
 
   it('persists a chosen inserted-text font size', async () => {
@@ -1122,14 +1282,86 @@ describe('App Component', () => {
     });
 
     expect(PluginNoteAPI.insertText).toHaveBeenCalled();
+    // The tap target (path/page/linkType) is preserved; the label is now just a jump icon.
     expect(PluginNoteAPI.insertTextLink).toHaveBeenCalledWith(
       expect.objectContaining({
         destPath: '/sdcard/Books/physics.pdf',
         destPage: 4,
         linkType: 2,
-        fullText: '[physics, p. 5 ↗]',
+        showText: '↗',
+        fullText: '↗',
       })
     );
+  });
+
+  it('does not insert a source link when Link-source is off', async () => {
+    const { PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+    jest.spyOn(StorageService, 'getInsertSourceLink').mockResolvedValue(false);
+
+    const testClips: ClipItem[] = [
+      {
+        id: 'cl1',
+        text: 'Link highlight text',
+        elements: [{
+          type: 'text',
+          text: 'Link highlight text',
+          documentPath: '/sdcard/Books/physics.pdf',
+          documentPage: 4,
+          articleName: 'physics.pdf',
+        }],
+        articleName: 'physics.pdf',
+        timestamp: 100,
+      },
+    ];
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    expect(PluginNoteAPI.insertText).toHaveBeenCalled();
+    expect(PluginNoteAPI.insertTextLink).not.toHaveBeenCalled();
+  });
+
+  it('places the jump icon inline on the last text line at the right margin', async () => {
+    const { PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+
+    const testClips: ClipItem[] = [
+      {
+        id: 'c3',
+        text: 'Short highlight',
+        elements: [{
+          type: 'text',
+          text: 'Short highlight',
+          documentPath: '/sdcard/Books/physics.pdf',
+          documentPage: 4,
+          articleName: 'physics.pdf',
+        }],
+        articleName: 'physics.pdf',
+        timestamp: 100,
+      },
+    ];
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    const lineHeight = Math.round(44 * 1.2);
+    const boxCall = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0];
+    const linkCall = (PluginNoteAPI.insertTextLink as jest.Mock).mock.calls[0][0];
+    // Icon right edge is pinned to the text box's right margin.
+    expect(linkCall.rect.right).toBe(boxCall.textRect.right);
+    // A 15-char clip is one line, so the icon sits ON that line (near the box top), not on a
+    // separate line below it.
+    expect(linkCall.rect.top - boxCall.textRect.top).toBeLessThan(lineHeight);
   });
 
   it('skips TextLinks in runInsertClips and cleans up storage when file is missing', async () => {
@@ -1249,7 +1481,10 @@ describe('App Component', () => {
     PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 0 });
   });
 
-  it('calls openFileDirectly and does not show toast when clicking Jump on same page of an EPUB file', async () => {
+  it('short-circuits Jump on the same page of an EPUB file (native intent now honors the target page)', async () => {
+    // Previously epub was exempt from the "already on this page" guard as a workaround for the
+    // sticky-page bug (the reader ignored our page extra). Now that openFileDirectly sends the
+    // real `file_path`/`page` keys, epub navigates reliably and gets the same guard as PDFs.
     const { FileUtils, PluginCommAPI } = require('sn-plugin-lib');
     FileUtils.exists.mockResolvedValue(true);
     PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/existing.epub' });
@@ -1284,11 +1519,8 @@ describe('App Component', () => {
     });
 
     const { NativeModules, ToastAndroid } = require('react-native');
-    expect(NativeModules.ImageCropModule.openFileDirectly).toHaveBeenCalledWith(
-      '/sdcard/Books/existing.epub',
-      5
-    );
-    expect(ToastAndroid.show).not.toHaveBeenCalledWith('Already on this page.', ToastAndroid.SHORT);
+    expect(NativeModules.ImageCropModule.openFileDirectly).not.toHaveBeenCalled();
+    expect(ToastAndroid.show).toHaveBeenCalledWith('Already on this page.', ToastAndroid.SHORT);
 
     // Restore default mocks
     PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/MyNote.note' });

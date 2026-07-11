@@ -34,63 +34,38 @@ class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 return
             }
 
-            // Bypass StrictMode file:// URI exposure check
-            val builder = StrictMode.VmPolicy.Builder()
-            StrictMode.setVmPolicy(builder.build())
+            // Bypass StrictMode file:// URI exposure check (we launch the first-party reader).
+            StrictMode.setVmPolicy(StrictMode.VmPolicy.Builder().build())
 
             val ext = file.extension.lowercase()
+            val isNote = ext == "note" || ext == "not"
             val mimeType = when (ext) {
                 "pdf" -> "application/pdf"
                 "epub" -> "application/epub+zip"
                 "txt" -> "text/plain"
-                "note" -> "*/*"
-                else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
+                else -> if (isNote) "*/*" else (MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*")
             }
 
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(Uri.fromFile(file), mimeType)
-                if (ext == "epub") {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-                } else {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION
-                }
+                // DocumentActivity / NoteInsidePagesActivity are launchMode=singleTask, so a
+                // plain NEW_TASK launch reuses the live instance via onNewIntent, which re-runs
+                // the reader's processIntent() and seeks to `page`.
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
 
-                // Set all possible path extras
-                putExtra("only_open_file", file.absolutePath)
-                putExtra("filePath", file.absolutePath)
-                putExtra("path", file.absolutePath)
-                putExtra("note_path", file.absolutePath)
-                putExtra("toUrl", file.absolutePath)
-                putExtra("to_url", file.absolutePath)
-
-                // Set all possible page number extras (0-indexed and 1-indexed)
+                // The Supernote reader resolves the target file from the `file_path` extra and
+                // seeks to `page` (see DocumentRout.documentProcessIntent /
+                // NoteInsidePagesActivity). Without `file_path` the parser falls back to the
+                // data-URI branch, which hard-codes page = -1 — so the reader ignores our
+                // target and shows the last-opened page instead (the "sticky page" bug).
+                putExtra("file_path", file.absolutePath)
                 putExtra("page", page)
-                putExtra("pageIndex", page)
-                putExtra("destPage", page)
-                putExtra("targetPage", page)
-                putExtra("page_index", page)
-                putExtra("currentPage", page)
-                putExtra("select_page", page)
-                putExtra("toPage", page)
-                putExtra("to_page", page)
-                
-                putExtra("page_num", page + 1)
-                putExtra("pageNum", page + 1)
-                putExtra("toPageNum", page + 1)
-                putExtra("to_page_num", page + 1)
 
-                // Set fromUrl/fromPage transition context to register link history
-                putExtra("fromUrl", "/storage/emulated/0/Note/Clipper.note")
-                putExtra("fromPage", 0)
-                putExtra("fromPageId", "P20260710000000000000000000000000")
-                putExtra("type", 1)
-                putExtra("status", 1)
-
-                // Explicitly set components to bypass app chooser and launch Ratta reader/editor directly
-                if (ext == "note") {
-                    component = ComponentName("com.ratta.supernote.note", "com.ratta.supernote.note.view.NoteInsidePagesActivity")
+                // Set the component explicitly to bypass the app chooser.
+                component = if (isNote) {
+                    ComponentName("com.ratta.supernote.note", "com.ratta.supernote.note.view.NoteInsidePagesActivity")
                 } else {
-                    component = ComponentName("com.supernote.document", "com.supernote.document.document.DocumentActivity")
+                    ComponentName("com.supernote.document", "com.supernote.document.document.DocumentActivity")
                 }
             }
 

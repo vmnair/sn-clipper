@@ -34,9 +34,10 @@ interface ClipCardProps {
   onPress: () => void;
   onLongPress: () => void;
   onOpenSource?: (clip: ClipItem, element: any, elementIndex: number) => void;
+  showSource?: boolean;
 }
 
-export function ClipCard({ clip, isSelected, isSelectionMode, onPress, onLongPress, onOpenSource }: ClipCardProps) {
+export function ClipCard({ clip, isSelected, isSelectionMode, onPress, onLongPress, onOpenSource, showSource = true }: ClipCardProps) {
   return (
     <Pressable
       onPress={onPress}
@@ -57,7 +58,7 @@ export function ClipCard({ clip, isSelected, isSelectionMode, onPress, onLongPre
           <Text style={styles.clipIndex}>{formatDate(clip.timestamp)}</Text>
         </View>
         {(() => {
-          const firstSrcIdx = clip.elements ? clip.elements.findIndex(el => !!el.documentPath) : -1;
+          const firstSrcIdx = (showSource && clip.elements) ? clip.elements.findIndex(el => !!el.documentPath) : -1;
           if (firstSrcIdx !== -1) {
             const firstSrc = clip.elements[firstSrcIdx];
             const pageNum = firstSrc.documentPage !== undefined ? firstSrc.documentPage + 1 : 1;

@@ -13,8 +13,13 @@ interface SettingsPopoverProps {
   onAutoRemoveChange: (value: boolean) => void;
   combineInserted: boolean;
   onCombineChange: (value: boolean) => void;
+  showSourceInClipper: boolean;
+  onShowSourceChange: (value: boolean) => void;
+  insertSourceLink: boolean;
+  onInsertSourceLinkChange: (value: boolean) => void;
   insertFontSize: number;
   onInsertFontSizeChange: (size: number) => void;
+  onResetToDefault: () => void;
   onClose: () => void;
 }
 
@@ -40,8 +45,13 @@ export function SettingsPopover({
   onAutoRemoveChange,
   combineInserted,
   onCombineChange,
+  showSourceInClipper,
+  onShowSourceChange,
+  insertSourceLink,
+  onInsertSourceLinkChange,
   insertFontSize,
   onInsertFontSizeChange,
+  onResetToDefault,
   onClose,
 }: SettingsPopoverProps) {
   return (
@@ -78,6 +88,33 @@ export function SettingsPopover({
 
         <View style={styles.popoverDivider} />
 
+        <Text style={styles.popoverSectionHeader}>Source document</Text>
+        <Pressable
+          onPress={() => onShowSourceChange(!showSourceInClipper)}
+          style={styles.popoverRow}
+          testID="setting-show-source"
+        >
+          <View style={styles.popoverLabelBlock}>
+            <Text style={styles.popoverRowLabel}>Show source &amp; jump in Clipper</Text>
+            <Text style={styles.popoverRowHint}>Jump icon on each clip card</Text>
+          </View>
+          <Badge selected={showSourceInClipper} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => onInsertSourceLinkChange(!insertSourceLink)}
+          style={styles.popoverRow}
+          testID="setting-insert-source-link"
+        >
+          <View style={styles.popoverLabelBlock}>
+            <Text style={styles.popoverRowLabel}>Link source when inserting</Text>
+            <Text style={styles.popoverRowHint}>Add a ↗ link under inserted clips</Text>
+          </View>
+          <Badge selected={insertSourceLink} />
+        </Pressable>
+
+        <View style={styles.popoverDivider} />
+
         <Text style={styles.popoverSectionHeader}>Inserted text size</Text>
         {FONT_OPTIONS.map((opt) => (
           <Pressable
@@ -90,6 +127,12 @@ export function SettingsPopover({
             <Badge selected={insertFontSize === opt.size} />
           </Pressable>
         ))}
+
+        <View style={styles.popoverDivider} />
+
+        <Pressable onPress={onResetToDefault} style={styles.resetButton} testID="setting-reset">
+          <Text style={styles.resetButtonText}>Reset to default</Text>
+        </Pressable>
       </Pressable>
     </>
   );
@@ -180,5 +223,18 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 10,
     fontWeight: 'bold',
+  },
+  resetButton: {
+    minHeight: 48,
+    borderWidth: 2,
+    borderColor: '#000000',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  resetButtonText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#000000',
   },
 });

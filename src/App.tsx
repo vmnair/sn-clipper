@@ -24,7 +24,7 @@ import { FilterPopover } from './components/FilterPopover';
 import { SettingsPopover } from './components/SettingsPopover';
 import { ClipList } from './components/ClipList';
 import { deriveArticleName, isDocFile } from './utils/paths';
-import { splitTextToFit } from './utils/text';
+import { splitTextToFit, countWrappedLines, measureWrappedText } from './utils/text';
 // Bundled at build time; versionCode is auto-incremented by buildPlugin.sh before bundling.
 const pluginConfig = require('../PluginConfig.json');
 const BUILD_LABEL = `v${pluginConfig.versionName} (build ${pluginConfig.versionCode})`;
@@ -110,8 +110,13 @@ export default function App() {
   const [autoRemoveInserted, setAutoRemoveInserted] = useState(true);
   // Font size (px) for text inserted into notes. Defaults to Medium (44).
   const [insertFontSize, setInsertFontSize] = useState<number>(DEFAULT_INSERT_FONT_SIZE);
-  // Combine inserted text clips into a single text box (default on).
-  const [combineInserted, setCombineInserted] = useState(true);
+  // Combine inserted text clips into a single text box (default off — separate keeps a
+  // per-clip inline source link, matching the plugin's per-document referencing purpose).
+  const [combineInserted, setCombineInserted] = useState(false);
+  // Source-reference toggles (both default on). Source is always captured; these only
+  // gate the two display surfaces: the Clipper card jump icon, and the inserted-note link.
+  const [showSourceInClipper, setShowSourceInClipper] = useState(true);
+  const [insertSourceLink, setInsertSourceLink] = useState(true);
 
   // Confirmation Dialog States (for deleted/broken source links)
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
@@ -141,6 +146,8 @@ export default function App() {
     StorageService.getAutoRemoveInserted().then(setAutoRemoveInserted);
     StorageService.getInsertFontSize().then(setInsertFontSize);
     StorageService.getCombineInserted().then(setCombineInserted);
+    StorageService.getShowSourceInClipper().then(setShowSourceInClipper);
+    StorageService.getInsertSourceLink().then(setInsertSourceLink);
 
     // Check active file context (Note vs Document)
     const runContextCheck = async () => {
@@ -505,7 +512,7 @@ export default function App() {
         return;
       }
 
-      // Check if we are already viewing this file and page to avoid redundant refreshes
+      // Skip a redundant relaunch when the reader is already on the target file+page.
       const fileRes = await PluginCommAPI.getCurrentFilePath();
       const pageRes = await PluginCommAPI.getCurrentPageNum();
       if (fileRes.success && fileRes.result && pageRes.success && pageRes.result !== undefined && pageRes.result !== null) {
@@ -515,8 +522,7 @@ export default function App() {
         const targetPage = element.documentPage ?? 0;
         const currentPage = pageRes.result;
 
-        const isEpub = targetPath.toLowerCase().endsWith('.epub');
-        if (!isEpub && targetPath === currentPath && targetPage === currentPage) {
+        if (targetPath === currentPath && targetPage === currentPage) {
           ToastAndroid.show('Already on this page.', ToastAndroid.SHORT);
           PluginManager.closePluginView();
           return;
@@ -784,7 +790,9 @@ export default function App() {
       // blank line (see the combine branch) rather than from precise height estimates; `gap`
       // is the blank space between separately-inserted boxes (~0.6 line).
       const fontSize = insertFontSize;
-      const lineHeight = Math.round(fontSize * 1.35);
+      // Matches the note renderer's actual line pitch (measured ≈1.18·fontSize on device);
+      // an oversized value made link/icon positions drift lower with each wrapped line.
+      const lineHeight = Math.round(fontSize * 1.2);
       const gap = Math.round(lineHeight * 0.6);
       const MIN_SPLIT_LINES = 3;
       const beforeIds = new Set<string>();
@@ -815,12 +823,17 @@ export default function App() {
             }
           } else if (el.type === 0) { // Stroke / handwriting type
             continue; // Ignore stroke elements entirely
+          } else if (el.type === 600) { // Text-link (our ↗ jump icon) — its extent is
+            continue; // already covered by the text box it sits on; and its maxY is bogus.
           }
           if (elBottom <= 0 && el.maxY) {
             // Fallback for non-stroke types that have maxY but no computed bottom
             elBottom = el.maxY;
           }
-          if (elBottom > currentY) {
+          // Sanity clamp: some element types report a garbage maxY far past the page
+          // (e.g. link elements report maxY≈16224 on a 2560-tall page). Never let such a
+          // value push the start-Y off the page, which would make everything "not fit".
+          if (elBottom > currentY && elBottom <= pageHeight) {
             currentY = elBottom;
           }
         }
@@ -858,22 +871,24 @@ export default function App() {
       }
 
       const maxWidth = pageWidth - 200;
-      // Approx characters per line for the chosen font (proportional font ~0.38·fontSize wide).
-      const charsPerLine = Math.max(1, Math.floor(maxWidth / (fontSize * 0.38)));
-      const estimateTextLines = (t: string) => {
-        if (!t) return 0;
-        const paragraphs = t.split('\n');
-        let totalLines = 0;
-        for (const p of paragraphs) {
-          totalLines += Math.max(1, Math.ceil(p.length / charsPerLine));
-        }
-        return totalLines;
-      };
-      const estimateTextHeight = (linesCount: number) => Math.round((linesCount + 0.3) * lineHeight);
+      // Approx characters per line for the chosen font (proportional font ~0.5·fontSize wide,
+      // calibrated to the device: a full line ≈78 chars at font 44 / maxWidth 1720).
+      const charsPerLine = Math.max(1, Math.floor(maxWidth / (fontSize * 0.5)));
+      // Word-wrap-aware line count (see countWrappedLines) — naive char-packing under-counts
+      // and clipped the last line of longer clips.
+      const estimateTextLines = (t: string) => countWrappedLines(t, charsPerLine);
+      // Height the text content actually occupies. Link placement and the fit/pagination
+      // checks use this; the inserted box gets a small extra pad (below) so descenders on the
+      // last line aren't clipped.
+      const estimateTextHeight = (linesCount: number) => linesCount * lineHeight;
+      const boxDescenderPad = Math.round(lineHeight * 0.35);
       const insertTextBox = async (content: string, top: number, height: number) => {
         await PluginNoteAPI.insertText({
           textContentFull: content,
-          textRect: { left: 100, top, right: 100 + maxWidth, bottom: top + height },
+          // Pad the box slightly beyond the estimated content height so the last line's
+          // descenders (and minor estimation error) are never clipped. The extra space is
+          // invisible (no frame) and links/next content are placed off the content height.
+          textRect: { left: 100, top, right: 100 + maxWidth, bottom: top + height + boxDescenderPad },
           fontSize,
           textAlign: 0,
           textBold: 0,
@@ -887,18 +902,45 @@ export default function App() {
       const fontSizeLink = Math.round(fontSize * 0.8);
       const linkHeight = Math.round(fontSizeLink * 1.35);
       const linkSpace = linkHeight + gap;
+      const linkGap = Math.round(lineHeight * 0.2); // tight, uniform gap between text and its link
+      const JUMP_ICON = '↗';
+      const iconWidth = Math.round(fontSizeLink * 1.4);
+      const charWidthPx = fontSize * 0.5; // avg glyph advance; must match the charsPerLine factor above
 
       const { FileUtils } = require('sn-plugin-lib');
 
-      const performInsertLink = async (destPath: string, destPage: number, articleNameStr: string, topY: number) => {
+      // Insert the small tappable jump icon with its right edge at the page's right margin.
+      // `topY` is the icon's top. destPath/destPage/linkType are preserved so tapping performs
+      // the same source jump as before — only the label (now just an icon) and size changed.
+      const performInsertJumpIcon = async (destPath: string, destPage: number, topY: number) => {
+        const linkType = destPath.endsWith('.note') || destPath.endsWith('.not')
+          ? (destPage !== undefined ? 0 : 1)
+          : 2;
+        const right = 100 + maxWidth;
+        await PluginNoteAPI.insertTextLink({
+          destPath,
+          destPage: destPage || 0,
+          style: 0, // solid underline
+          linkType,
+          rect: { left: right - iconWidth, top: topY, right, bottom: topY + linkHeight },
+          fontSize: fontSizeLink,
+          fullText: JUMP_ICON,
+          showText: JUMP_ICON,
+          isItalic: 0,
+        });
+      };
+
+      // Full-width labeled link for Combine mode, where clips are merged into one box and the
+      // links stack at the end — a bare icon would give no clue which source it points to, so
+      // we show "[name, p. N ↗]" (name truncated) for context.
+      const performInsertLabeledLink = async (destPath: string, destPage: number, articleNameStr: string, topY: number) => {
         const pageNum = destPage !== undefined ? destPage + 1 : 1;
-        const cleanName = articleNameStr.replace(/\.[^/.]+$/, ""); // strip extension
-        const shortenedName = cleanName.length > 20 ? cleanName.substring(0, 17) + '...' : cleanName;
+        const cleanName = (articleNameStr || 'Unknown Document').replace(/\.[^/.]+$/, ''); // strip extension
+        const shortenedName = cleanName.length > 24 ? cleanName.substring(0, 23) + '…' : cleanName;
         const labelText = `[${shortenedName}, p. ${pageNum} ↗]`;
         const linkType = destPath.endsWith('.note') || destPath.endsWith('.not')
           ? (destPage !== undefined ? 0 : 1)
           : 2;
-
         await PluginNoteAPI.insertTextLink({
           destPath,
           destPage: destPage || 0,
@@ -910,6 +952,39 @@ export default function App() {
           showText: labelText,
           isItalic: 0,
         });
+      };
+
+      // Place the jump icon on the clip's last text line at the right margin when there's
+      // room; if the last line reaches too far right, drop the icon onto its own right-aligned
+      // line just below (so it never overlaps text). The first source is the inline one; any
+      // extra unique sources (rare) stack on their own lines. Returns the Y to continue from.
+      const placeJumpIconForBlock = async (
+        boxTop: number,
+        lines: number,
+        lastLineChars: number,
+        links: { path: string; page: number }[],
+      ): Promise<number> => {
+        const contentBottom = boxTop + lines * lineHeight;
+        const [primary, ...rest] = links;
+        const lastLineTop = boxTop + (lines - 1) * lineHeight;
+        const lastWordRight = 100 + Math.round(lastLineChars * charWidthPx);
+        const iconLeft = (100 + maxWidth) - iconWidth;
+        const fitsInline = lastWordRight + Math.round(charWidthPx) <= iconLeft;
+        let y: number;
+        if (fitsInline) {
+          await performInsertJumpIcon(primary.path, primary.page, lastLineTop + Math.round((lineHeight - linkHeight) / 2));
+          y = contentBottom; // icon consumed no extra line
+        } else {
+          const iconTop = contentBottom + linkGap;
+          await performInsertJumpIcon(primary.path, primary.page, iconTop);
+          y = iconTop + linkHeight;
+        }
+        for (const link of rest) {
+          const iconTop = y + linkGap;
+          await performInsertJumpIcon(link.path, link.page, iconTop);
+          y = iconTop + linkHeight;
+        }
+        return y + gap;
       };
 
       const getUniqueLinksSync = (groupItems: typeof items) => {
@@ -1023,18 +1098,24 @@ export default function App() {
           }
           if (group.length > 0) {
             const combined = group.map((g) => g.text).join('\n\n');
-            const groupHeight = estimateTextHeight(groupLines);
+            const combinedWrap = measureWrappedText(combined, charsPerLine);
+            const groupHeight = combinedWrap.lines * lineHeight;
             await insertTextBox(combined, currentY, groupHeight);
             attemptedInserts++;
             group.forEach((g) => { insertedCountByClip[g.clipId] = (insertedCountByClip[g.clipId] || 0) + 1; });
-            
-            let nextY = currentY + groupLines * lineHeight;
-            const validLinks = await getValidLinksForGroup(group);
-            for (const link of validLinks) {
-              await performInsertLink(link.path, link.page, link.articleName, nextY);
-              nextY += linkSpace;
+
+            const validLinks = insertSourceLink ? await getValidLinksForGroup(group) : [];
+            if (validLinks.length > 0) {
+              // Combine mode: stack labeled links after the box so each is identifiable.
+              let ny = currentY + groupHeight + linkGap;
+              for (const link of validLinks) {
+                await performInsertLabeledLink(link.path, link.page, link.articleName, ny);
+                ny += linkSpace;
+              }
+              currentY = ny;
+            } else {
+              currentY = currentY + groupHeight + gap;
             }
-            currentY = validLinks.length > 0 ? nextY : (currentY + groupHeight + gap);
             pageHasContent = true;
             i = j;
             await new Promise(r => setTimeout(r, 300));
@@ -1050,51 +1131,64 @@ export default function App() {
 
         // Single text item: fits whole, or split across pages, or defer to a fresh page.
         const t = item.text;
-        const estLines = estimateTextLines(t);
-        const estH = estimateTextHeight(estLines);
+        const wrap = measureWrappedText(t, charsPerLine);
+        const estLines = wrap.lines;
+        const estH = estLines * lineHeight;
         const singleLinkCount = item.documentPath ? 1 : 0;
         const totalSingleHeight = estH + (singleLinkCount * linkSpace);
         if (totalSingleHeight <= availHeight) {
           await insertTextBox(t, currentY, estH);
           attemptedInserts++;
           insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
-          
-          let nextY = currentY + estLines * lineHeight;
+
           let linksInserted = false;
-          if (item.documentPath) {
+          if (item.documentPath && insertSourceLink) {
             const validLinks = await getValidLinksForGroup([item]);
             if (validLinks.length > 0) {
-              await performInsertLink(validLinks[0].path, validLinks[0].page, validLinks[0].articleName, nextY);
-              nextY += linkSpace;
+              // Icon on the last text line at the right margin (no extra line → even spacing).
+              currentY = await placeJumpIconForBlock(currentY, estLines, wrap.lastLineChars, validLinks);
               linksInserted = true;
             }
           }
-          currentY = linksInserted ? nextY : (currentY + estH + gap);
+          if (!linksInserted) currentY = currentY + estH + gap;
           pageHasContent = true;
           i++;
           await new Promise(r => setTimeout(r, 300));
           if (combineInserted) break; // combine handles multi-item via the group; be safe
           continue; // separate mode: keep stacking boxes on this page
         } else {
+          // When auto-remove is OFF the clip is kept intact, so we can't trim it down to the
+          // un-inserted remainder — splitting would leave the whole clip in Clipper and
+          // re-inserting on the next page would duplicate the chunk. Defer the WHOLE clip to a
+          // fresh page instead, as long as it fits on one (a clip taller than a full page has
+          // no choice but to split).
+          const fullPageAvail = (pageHeight - gap) - 100;
+          if (!autoRemoveInserted && totalSingleHeight <= fullPageAvail) {
+            outOfSpace = true;
+            break;
+          }
           const linesThatFit = Math.floor((availHeight - (item.documentPath ? linkSpace : 0)) / lineHeight);
           if (linesThatFit < MIN_SPLIT_LINES) { outOfSpace = true; break; } // start fresh next page
-          const charBudget = linesThatFit * charsPerLine;
+          // Leave headroom for word-wrap waste so the chunk actually wraps within linesThatFit.
+          const charBudget = Math.floor(linesThatFit * charsPerLine * 0.9);
           const [chunk, remainder] = splitTextToFit(t, charBudget);
           if (!chunk) { outOfSpace = true; break; }
-          const chunkH = linesThatFit * lineHeight;
+          const chunkWrap = measureWrappedText(chunk, charsPerLine);
+          const chunkH = chunkWrap.lines * lineHeight;
           await insertTextBox(chunk, currentY, chunkH);
           attemptedInserts++;
           if (remainder) { splitRemainder[item.clipId] = remainder; splitOccurred = true; }
-          
-          let nextY = currentY + chunkH + Math.round(lineHeight * 0.3);
-          if (item.documentPath) {
+
+          if (item.documentPath && insertSourceLink) {
             const validLinks = await getValidLinksForGroup([item]);
             if (validLinks.length > 0) {
-              await performInsertLink(validLinks[0].path, validLinks[0].page, validLinks[0].articleName, nextY);
-              nextY += linkSpace;
+              currentY = await placeJumpIconForBlock(currentY, chunkWrap.lines, chunkWrap.lastLineChars, validLinks);
+            } else {
+              currentY = currentY + chunkH + gap;
             }
+          } else {
+            currentY = currentY + chunkH + gap;
           }
-          currentY = nextY;
           await PluginNoteAPI.saveCurrentNote();
           await new Promise(r => setTimeout(r, 300));
           break; // page full
@@ -1318,6 +1412,7 @@ export default function App() {
           onCardPress={handleCardPress}
           onCardLongPress={handleCardLongPress}
           onOpenSource={handleOpenSource}
+          showSource={showSourceInClipper}
         />
 
         {/* Footer Actions Area */}
@@ -1396,10 +1491,29 @@ export default function App() {
             setCombineInserted(value);
             StorageService.setCombineInserted(value);
           }}
+          showSourceInClipper={showSourceInClipper}
+          onShowSourceChange={(value) => {
+            setShowSourceInClipper(value);
+            StorageService.setShowSourceInClipper(value);
+          }}
+          insertSourceLink={insertSourceLink}
+          onInsertSourceLinkChange={(value) => {
+            setInsertSourceLink(value);
+            StorageService.setInsertSourceLink(value);
+          }}
           insertFontSize={insertFontSize}
           onInsertFontSizeChange={(size) => {
             setInsertFontSize(size);
             StorageService.setInsertFontSize(size);
+          }}
+          onResetToDefault={() => {
+            // Restore every setting to its application default.
+            setAutoRemoveInserted(true); StorageService.setAutoRemoveInserted(true);
+            setCombineInserted(false); StorageService.setCombineInserted(false);
+            setInsertFontSize(DEFAULT_INSERT_FONT_SIZE); StorageService.setInsertFontSize(DEFAULT_INSERT_FONT_SIZE);
+            setShowSourceInClipper(true); StorageService.setShowSourceInClipper(true);
+            setInsertSourceLink(true); StorageService.setInsertSourceLink(true);
+            ToastAndroid.show('Settings reset to default.', ToastAndroid.SHORT);
           }}
           onClose={() => setIsSettingsOpen(false)}
         />

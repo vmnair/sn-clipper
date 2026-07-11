@@ -1,4 +1,39 @@
-import { splitTextToFit } from '../src/utils/text';
+import { splitTextToFit, countWrappedLines } from '../src/utils/text';
+
+describe('countWrappedLines', () => {
+  it('returns 0 for empty text', () => {
+    expect(countWrappedLines('', 10)).toBe(0);
+  });
+
+  it('counts a short string as one line', () => {
+    expect(countWrappedLines('hello world', 40)).toBe(1);
+  });
+
+  it('wraps on word boundaries (more lines than naive char-packing)', () => {
+    // 5 words of 8 chars ("aaaaaaaa") + spaces = 44 chars. Naive ceil(44/10)=5, but greedy
+    // word-wrap fits only one 8-char word per 10-char line → 5 lines here, and for tighter
+    // budgets the word-boundary waste shows.
+    const text = 'aaaaaaaa bbbbbbbb cccccccc';         // three 8-char words
+    // budget 10: each line holds one word (8) — "aaaaaaaa"(8), next needs 8+1+8=17>10 → wrap.
+    expect(countWrappedLines(text, 10)).toBe(3);
+    // budget 17: "aaaaaaaa bbbbbbbb" = 17 fits, then "cccccccc" wraps → 2 lines.
+    expect(countWrappedLines(text, 17)).toBe(2);
+  });
+
+  it('never under-counts vs a word-unaware packer for wrappable text', () => {
+    const text = 'the quick brown fox jumps over the lazy dog again today';
+    const naive = Math.ceil(text.length / 12);
+    expect(countWrappedLines(text, 12)).toBeGreaterThanOrEqual(naive);
+  });
+
+  it('counts a single over-long token across the lines it fills', () => {
+    expect(countWrappedLines('x'.repeat(25), 10)).toBe(3); // 25 chars over 10-wide lines
+  });
+
+  it('counts blank paragraphs (from \\n\\n between clips) as one line each', () => {
+    expect(countWrappedLines('one\n\ntwo', 40)).toBe(3); // "one", blank, "two"
+  });
+});
 
 describe('splitTextToFit', () => {
   it('returns the whole text when it fits the budget', () => {

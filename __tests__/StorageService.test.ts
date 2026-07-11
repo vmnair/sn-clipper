@@ -90,11 +90,25 @@ describe('StorageService', () => {
     expect(await StorageService.getInsertFontSize()).toBe(56);
   });
 
-  it('defaults combine-inserted to on and persists changes', async () => {
-    expect(await StorageService.getCombineInserted()).toBe(true);
-    await StorageService.setCombineInserted(false);
-    expect(AsyncStorage.setItem).toHaveBeenCalledWith('clipper_combine_inserted', 'false');
+  it('defaults combine-inserted to off and persists changes', async () => {
     expect(await StorageService.getCombineInserted()).toBe(false);
+    await StorageService.setCombineInserted(true);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('clipper_combine_inserted', 'true');
+    expect(await StorageService.getCombineInserted()).toBe(true);
+  });
+
+  it('defaults show-source-in-clipper to on and persists changes', async () => {
+    expect(await StorageService.getShowSourceInClipper()).toBe(true);
+    await StorageService.setShowSourceInClipper(false);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('clipper_show_source', 'false');
+    expect(await StorageService.getShowSourceInClipper()).toBe(false);
+  });
+
+  it('defaults insert-source-link to on and persists changes', async () => {
+    expect(await StorageService.getInsertSourceLink()).toBe(true);
+    await StorageService.setInsertSourceLink(false);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('clipper_insert_source_link', 'false');
+    expect(await StorageService.getInsertSourceLink()).toBe(false);
   });
 
   it('should migrate legacy parent-level documentPath/documentPage to first sub-element on load', async () => {
@@ -215,7 +229,7 @@ describe('StorageService', () => {
 
       AsyncStorage.getItem = jest.fn().mockRejectedValue(new Error('Mock AsyncStorage error'));
       const val = await StorageService.getCombineInserted();
-      expect(val).toBe(true);
+      expect(val).toBe(false);
       expect(consoleErrorSpy).toHaveBeenCalled();
       consoleErrorSpy.mockRestore();
     });

@@ -25,6 +25,8 @@ const STORAGE_KEY = 'sn_clipper_aggregated_clips';
 const AUTO_REMOVE_KEY = 'clipper_auto_remove_inserted';
 const INSERT_FONT_SIZE_KEY = 'clipper_insert_font_size';
 const COMBINE_INSERTED_KEY = 'clipper_combine_inserted';
+const SHOW_SOURCE_KEY = 'clipper_show_source';
+const INSERT_SOURCE_LINK_KEY = 'clipper_insert_source_link';
 
 // Font-size presets for inserted note text. Medium is the historical default (44).
 export const INSERT_FONT_SIZES = { small: 32, medium: 44, large: 56 } as const;
@@ -199,18 +201,19 @@ export class StorageService {
   }
 
   /**
-   * Whether inserted text clips are combined into a single text box (default true). When
-   * false, each clip is inserted as its own text box.
+   * Whether inserted text clips are combined into a single text box (default false). When
+   * false, each clip is inserted as its own text box (keeping a per-clip inline source link,
+   * which matches the plugin's per-document referencing purpose).
    */
   static async getCombineInserted(): Promise<boolean> {
     try {
       const value = await AsyncStorage.getItem(COMBINE_INSERTED_KEY);
-      if (value === null) return true; // default on
+      if (value === null) return false; // default off
       return value === 'true';
     } catch (e) {
       console.error('Failed to load combine-inserted setting:', e);
     }
-    return true;
+    return false;
   }
 
   /**
@@ -221,6 +224,56 @@ export class StorageService {
       await AsyncStorage.setItem(COMBINE_INSERTED_KEY, value ? 'true' : 'false');
     } catch (e) {
       console.error('Failed to save combine-inserted setting:', e);
+    }
+  }
+
+  /**
+   * Whether clip cards show the source document + jump icon (default true).
+   */
+  static async getShowSourceInClipper(): Promise<boolean> {
+    try {
+      const value = await AsyncStorage.getItem(SHOW_SOURCE_KEY);
+      if (value === null) return true; // default on
+      return value === 'true';
+    } catch (e) {
+      console.error('Failed to load show-source setting:', e);
+    }
+    return true;
+  }
+
+  /**
+   * Persist whether clip cards show the source document + jump icon.
+   */
+  static async setShowSourceInClipper(value: boolean): Promise<void> {
+    try {
+      await AsyncStorage.setItem(SHOW_SOURCE_KEY, value ? 'true' : 'false');
+    } catch (e) {
+      console.error('Failed to save show-source setting:', e);
+    }
+  }
+
+  /**
+   * Whether a source link (↗) is added under clips when inserting into a note (default true).
+   */
+  static async getInsertSourceLink(): Promise<boolean> {
+    try {
+      const value = await AsyncStorage.getItem(INSERT_SOURCE_LINK_KEY);
+      if (value === null) return true; // default on
+      return value === 'true';
+    } catch (e) {
+      console.error('Failed to load insert-source-link setting:', e);
+    }
+    return true;
+  }
+
+  /**
+   * Persist whether a source link is added under clips when inserting into a note.
+   */
+  static async setInsertSourceLink(value: boolean): Promise<void> {
+    try {
+      await AsyncStorage.setItem(INSERT_SOURCE_LINK_KEY, value ? 'true' : 'false');
+    } catch (e) {
+      console.error('Failed to save insert-source-link setting:', e);
     }
   }
 }
