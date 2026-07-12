@@ -1,8 +1,9 @@
 # Workspace Agent Rules & Guidelines
 
 - **Version Bumping Requirement**:
-  - Always bump the `versionName` in both `package.json` and `PluginConfig.json` (e.g., from `0.0.3` to `0.0.4`) and run the build script (which increments the `versionCode` in `PluginConfig.json`) whenever changes are made to the codebase.
-  - This ensures that the Supernote OS updates the installed plugin package on the device correctly and prevents caching issues.
+  - Bump the `versionName` (minor or patch digit) in both `package.json` and `PluginConfig.json` **only when adding a new feature** (e.g., `0.1.4` → `0.1.5`).
+  - For all other/incremental changes (bug fixes, tweaks, iteration), do **not** bump `versionName` — just run the build script, which auto-increments the `versionCode` (build number) in `PluginConfig.json`.
+  - The `versionCode` is what the Supernote OS uses to detect and re-install an updated package, so incrementing it alone prevents caching issues; `versionName` is the human-facing release label.
 
 - **Version & Build Logging Requirement**:
   - After running any build (`./buildPlugin.sh`) or deploy (`./deploy.sh`) command, always read [PluginConfig.json](file:///Users/vinodnair/Projects/sn-clipper/PluginConfig.json) and display the current `versionName` and `versionCode` (build number) in the console/chat response.
