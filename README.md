@@ -1,7 +1,7 @@
 # 📎 Clipper
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.1.7-blue" alt="version" />
   <img src="https://img.shields.io/badge/platform-Supernote%20(Manta)-000000" alt="platform" />
   <img src="https://img.shields.io/badge/built%20with-React%20Native-61DAFB?logo=react&logoColor=white" alt="react native" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
@@ -46,6 +46,7 @@ into a note → **settings** to tune insertion.
 - 🔢 **Dynamic badge count.** The sidebar button shows the current count, e.g. `Clipper (5)`.
 - 🔍 **Search.** Filter by keyword (matches clip text and source name).
 - 🏷️ **Filter by source.** Show only clips from a chosen document.
+- ↗️ **Jump-to-Source.** Tap the **Jump** icon next to any clip card in the dashboard to reopen its source document (PDF, EPUB, or Note) at the exact page you clipped from.
 - ↕️ **Sort.** Newest‑first or oldest‑first.
 
 ### 🧰 Organizing clips (selection mode)
@@ -63,6 +64,9 @@ into a note → **settings** to tune insertion.
 
 - 🧱 **Combined text block.** Text clips are inserted as **one text box**, separated by a single
   blank line — uniform, tidy spacing (togglable; off = a separate box per clip).
+- ↗️ **In-Note Back-Links.** Automatically appends a tappable back-link to the source page under inserted clips:
+  - *Separate mode*: Pins a small `↗` inline icon to the right margin of the last text line (retaining uniform line spacing).
+  - *Combined mode*: Appends labeled links `[filename, p. N ↗]` stacked at the bottom of the text block to clearly distinguish multiple sources.
 - ✂️ **Long‑clip auto‑split.** A clip too tall for one page is split at a **sentence boundary**;
   the rest continues on the next page.
 - 🖼️ **One figure per page.** Images are centred by the system and can't be repositioned, so each
@@ -74,8 +78,11 @@ into a note → **settings** to tune insertion.
 
 - 🧹 **Remove clips after inserting** *(default: on)* — delete clips once inserted, or keep them
   (e.g. to insert the same set into several notes).
-- 🧱 **Combine inserted text** *(default: on)* — one block, or a separate box per clip.
+- 🧱 **Combine inserted text** *(default: off)* — one block, or a separate box per clip.
+- 🏷️ **Show source & jump in Clipper** *(default: on)* — shows/hides the source file label and the jump icon on cards.
+- 🔗 **Link source when inserting** *(default: on)* — toggles appending of back-links into notes.
 - 🔠 **Inserted text size** — **Small / Medium / Large**.
+- 🔄 **Reset to default** — quickly restore all default settings.
 
 ---
 
