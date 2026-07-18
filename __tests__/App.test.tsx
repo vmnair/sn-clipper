@@ -75,7 +75,7 @@ jest.mock('react-native', () => {
       },
     },
     AppState: {
-      addEventListener: jest.fn().mockReturnValue({ remove: jest.fn() }),
+      addEventListener: jest.fn((_evt: any, cb: any) => { (globalThis as any).__appStateCb = cb; return { remove: jest.fn() }; }),
     },
     BackHandler: {
       exitApp: jest.fn(),
@@ -1223,6 +1223,26 @@ describe('App Component', () => {
       expect.stringContaining('Clipped as Text!'),
       ToastAndroid.SHORT
     );
+  });
+
+  it('keeps the prompt open when a follow-up context check runs (AppState active race)', async () => {
+    await ClipService.setPromptText('Short selection text');
+    await ClipService.setLaunchMode('prompt');
+    const root = await renderApp();
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+
+    // Prompt is shown; launch mode has now been consumed to 'normal'.
+    expect(root.root.findByProps({ children: 'Clip Selection' })).toBeTruthy();
+
+    // Simulate the AppState 'active' event firing a second context check — it reads the
+    // already-consumed 'normal' mode. The prompt must NOT be dismissed (the regression).
+    await act(async () => {
+      const cb = (globalThis as any).__appStateCb;
+      if (cb) cb('active');
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(root.root.findByProps({ children: 'Clip Selection' })).toBeTruthy();
   });
 
   it('shows selection prompt modal and handles Clip as Image', async () => {

@@ -133,6 +133,10 @@ export default function App() {
   // Cached plugin dir so the button-press listener can build the shot path without
   // an async round-trip that would delay the capture.
   const pluginDirRef = useRef<string | null>(null);
+  // True while a launch-mode 'prompt' dialog is active for this launch. Guards against a
+  // follow-up context check (e.g. AppState 'active') reading the already-consumed 'normal'
+  // launch mode and dismissing the just-shown prompt (the flash-then-disappear regression).
+  const promptActiveRef = useRef(false);
 
   useEffect(() => {
     // Sync current list from Storage on open
@@ -168,6 +172,7 @@ export default function App() {
           const text = await ClipService.getPromptText();
           if (text && text.trim().length > 0) {
             setPromptText(text);
+            promptActiveRef.current = true;
             setShowPromptDialog(true);
           } else {
             const { BackHandler } = require('react-native');
@@ -192,9 +197,13 @@ export default function App() {
         }
 
         // The 'prompt' (and 'autoclipped') modes have already returned above, so here
-        // launchMode is 'normal' or 'crop': always clear any stale prompt dialog state.
-        setShowPromptDialog(false);
-        setPromptText('');
+        // launchMode is 'normal' or 'crop'. Clear stale prompt state — but NOT when a prompt
+        // is active for this launch: a follow-up check (AppState 'active') sees the already-
+        // consumed 'normal' mode and would otherwise dismiss the just-shown prompt.
+        if (!promptActiveRef.current) {
+          setShowPromptDialog(false);
+          setPromptText('');
+        }
 
         if (launchMode !== 'crop') {
           setIsCropping(false);
@@ -1306,11 +1315,13 @@ export default function App() {
           textLabel="Clip Text"
           primaryAction="image"
           onClipImage={async () => {
+            promptActiveRef.current = false;
             setShowPromptDialog(false);
             await ClipService.setPromptText('');
             await handleStartCropping(currentFilePath || undefined, currentPageNum);
           }}
           onClipText={async () => {
+            promptActiveRef.current = false;
             setShowPromptDialog(false);
             await ClipService.setPromptText('');
             await ClipService.addClip(
@@ -1324,6 +1335,7 @@ export default function App() {
             PluginManager.closePluginView();
           }}
           onCancel={async () => {
+            promptActiveRef.current = false;
             setShowPromptDialog(false);
             await ClipService.setPromptText('');
             const { PluginManager } = require('sn-plugin-lib');
