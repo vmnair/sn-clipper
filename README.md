@@ -57,8 +57,7 @@ into a note → **settings** to tune insertion.
 - 📄 **Copy.** Copy the visible or selected clips (combined text) to the system clipboard.
   *(Disabled for a figure — an image can't go on the text clipboard.)*
 - 🗑️ **Delete / Clear All.** Remove selected clips, or clear everything.
-- 🖼️ **Figure‑alone rule.** A figure can only be selected on its own (it inserts alone and
-  can't be copied or merged), keeping every action unambiguous.
+- 🖼️ *Figures and text can be mixed.** Scaled insertion of figures in notes.
 
 ### 📝 Inserting into a note
 
@@ -69,8 +68,7 @@ into a note → **settings** to tune insertion.
   - *Combined mode*: Appends labeled links `[filename, p. N ↗]` stacked at the bottom of the text block to clearly distinguish multiple sources.
 - ✂️ **Long‑clip auto‑split.** A clip too tall for one page is split at a **sentence boundary**;
   the rest continues on the next page.
-- 🖼️ **One figure per page.** Images are centred by the system and can't be repositioned, so each
-  figure is inserted **alone on its own page** — no overlap, and text never lands on a figure's page.
+- 🖼️ **Multiple figure's (region clips) can be inserted into a page**. Previous limitation of a one page, one image has been lifted.
 - 📄 **Current‑page insertion.** Clipper inserts onto the page you're viewing; when more remains,
   it inserts what fits and prompts you to **turn to a new page and Insert again**.
 
@@ -103,7 +101,8 @@ into a note → **settings** to tune insertion.
 2. **Review in the dashboard.** Open the plugins menu → **Clipper** to see, search, filter,
    merge, or delete your clips.
 3. **Insert into a note.** Open a note, then in Clipper tap **Insert into open Note**. Text
-   flows into one block; figures land one per page. Turn to a new page and Insert again if prompted.
+   flows into one block; Text and figures can be mixed, multiple figures can be added to a page.
+   Turn to a new page and Insert again if prompted.
 
 ---
 
@@ -111,9 +110,8 @@ into a note → **settings** to tune insertion.
 
 - 🖼️ **Region capture** relies on capturing the live reader view via the plugin host's system
   privileges — required because the SDK can't re‑render reflowable EPUB at the reader's
-  font/pagination. It could be affected by a future firmware change.
-- 📐 **Images can't be positioned individually** by the plugin (the SDK centres them), so a
-  figure is inserted alone on its own page.
+  font/pagination. There will be a  new API for screen capture at that time, I plan to update so system calls are not made.
+- 📐 **Images can be positioned individually** figures are added just like text starting from the upper left corner.
 - 📄 **Inserting works on the current page only** — the plugin can't turn pages for you. When a
   clip is split or a figure needs its own page, Clipper inserts what fits, then asks you to turn
   to a new page and Insert again.
@@ -123,7 +121,8 @@ into a note → **settings** to tune insertion.
 ## 🗺️ Roadmap
 
 - ✍️ Highlight selections in the document (clipped text isn't highlighted in place yet).
-- 📱 Testing on **Nomad** — I don't own one; feedback from Nomad users is very welcome.
+- 📱 Testing on **Nomad** — I understand certain versions are tested on Nomad, I appreciate feedback from
+  Nomad users. I do not own a Nomad.
 
 ---
 
