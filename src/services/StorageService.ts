@@ -95,6 +95,9 @@ export class StorageService {
   static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped'): Promise<void> {
     try {
       await AsyncStorage.setItem('clipper_launch_mode', mode);
+      // Await the native mirror: it emits onLaunchModeChange, which lets the App run
+      // checkContext and show the prompt BEFORE the UI comes to the foreground. Making this
+      // fire-and-forget reordered things so the dashboard flashed before the prompt.
       const { NativeModules } = require('react-native');
       const { ImageCropModule } = NativeModules;
       if (ImageCropModule && typeof ImageCropModule.setLaunchMode === 'function') {

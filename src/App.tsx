@@ -43,32 +43,21 @@ async function sweepOrphanCaptures(): Promise<void> {
     const entries = await FileUtils.listFiles(dir);
     if (!Array.isArray(entries)) return;
 
-    const referenced = new Set<string>();
-    for (const clip of ClipService.getClipsSync()) {
-      for (const el of clip.elements) {
-        if (el.type === 'image' && el.imagePath) {
-          referenced.add(el.imagePath.substring(el.imagePath.lastIndexOf('/') + 1));
-        }
-      }
-    }
-
     const now = Date.now();
     for (const entry of entries) {
       const name = entry.substring(entry.lastIndexOf('/') + 1);
-      const isReaderShot = name.startsWith('reader_shot_');
-      const isTempCrop = name.startsWith('temp_crop_page_');
-      const isClip = name.startsWith('clip_');
-      if (!isReaderShot && !isTempCrop && !isClip) continue;
+      // Only sweep TRANSIENT captures (reader screenshots / temp crop pages) that were orphaned
+      // by a crash mid-capture. NEVER touch clip_* files — those are user data (the backing
+      // images of image clips), already deleted by ClipService.deleteClips when a clip is
+      // removed. Sweeping them here previously deleted LIVE clip images whenever the clip list
+      // was momentarily empty at mount, leaving blank-image clips (data loss).
+      const isTransient = name.startsWith('reader_shot_') || name.startsWith('temp_crop_page_');
+      if (!isTransient) continue;
 
       const tsMatch = name.match(/(\d{10,})/); // embedded Date.now() (13 digits)
       const ts = tsMatch ? parseInt(tsMatch[1], 10) : 0;
       const isStale = !ts || now - ts > CAPTURE_STALE_MS;
-
-      if (isClip) {
-        if (referenced.has(name) || !isStale) continue; // keep referenced or fresh clips
-      } else if (!isStale) {
-        continue; // keep a possibly-pending fresh capture
-      }
+      if (!isStale) continue; // keep a possibly-pending fresh capture
 
       const full = entry.startsWith('/') ? entry : `${dir}/${name}`;
       try { await FileUtils.deleteFile(full); } catch (e) { /* best-effort */ }
@@ -117,6 +106,17 @@ export default function App() {
   // gate the two display surfaces: the Clipper card jump icon, and the inserted-note link.
   const [showSourceInClipper, setShowSourceInClipper] = useState(true);
   const [insertSourceLink, setInsertSourceLink] = useState(true);
+
+  // True while an insert is running — disables the Insert button so rapid taps can't kick off
+  // a second concurrent insert (which would duplicate content). insertingRef guards re-entry
+  // synchronously (before the state update lands).
+  const [isInserting, setIsInserting] = useState(false);
+  const insertingRef = useRef(false);
+
+  // False until the first context check resolves the launch mode. We hold back the dashboard
+  // render until then so a prompt/crop launch never flashes the dashboard first (the "glimpse
+  // of Clipper" before the prompt dialog).
+  const [contextResolved, setContextResolved] = useState(false);
 
   // Confirmation Dialog States (for deleted/broken source links)
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
@@ -238,6 +238,10 @@ export default function App() {
       } catch (e) {
         console.error('Failed to query file path context:', e);
         setIsNoteFile(true);
+      } finally {
+        // The launch mode is now known — safe to render the dashboard (or the prompt/crop view
+        // already shown above). Runs on every path so we never get stuck on the placeholder.
+        setContextResolved(true);
       }
     };
 
@@ -388,19 +392,8 @@ export default function App() {
     if (updated.includes(id)) {
       updated = updated.filter((item) => item !== id);
     } else {
-      // A figure can only be selected on its own (it inserts alone on its own page, and can't
-      // be copied or merged), so figures and text never mix in a selection.
-      const addingClip = clips.find((c) => c.id === id);
-      const addingImage = addingClip ? clipHasImage(addingClip) : false;
-      const selectionHasImageNow = clips.some((c) => selectedIds.includes(c.id) && clipHasImage(c));
-      if (addingImage && selectedIds.length > 0) {
-        ToastAndroid.show('A figure can only be selected on its own.', ToastAndroid.SHORT);
-        return;
-      }
-      if (!addingImage && selectionHasImageNow) {
-        ToastAndroid.show('Deselect the figure to select text.', ToastAndroid.SHORT);
-        return;
-      }
+      // Figures and text can be selected together — Insert now stacks mixed content, Copy
+      // copies the text parts (images skipped), and Merge stays disabled for figures.
       updated.push(id);
     }
 
@@ -443,6 +436,12 @@ export default function App() {
   // can't lay out an image alongside text, so text+image clips are disallowed.
   const selectionHasImage = useMemo(
     () => clips.some((c) => selectedIds.includes(c.id) && clipHasImage(c)),
+    [clips, selectedIds]
+  );
+  // Whether the selection contains any copyable text (a mixed image+text selection does;
+  // an image-only selection does not). Copy is enabled only when there is text to copy.
+  const selectionHasText = useMemo(
+    () => clips.some((c) => selectedIds.includes(c.id) && !!c.elements && c.elements.some((e) => e.type === 'text' && !!e.text && e.text.trim().length > 0)),
     [clips, selectedIds]
   );
   const canMerge = selectedIds.length >= 2 && !selectionHasImage;
@@ -767,6 +766,9 @@ export default function App() {
 
   const runInsertClips = async (clipsToInsert: ClipItem[]) => {
     if (clipsToInsert.length === 0) return;
+    if (insertingRef.current) return; // ignore re-entrant taps while an insert is in progress
+    insertingRef.current = true;
+    setIsInserting(true);
     try {
       const { PluginCommAPI, PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
       
@@ -778,6 +780,13 @@ export default function App() {
       const notePath = fileRes.result;
       const pageRes = await PluginCommAPI.getCurrentPageNum();
       const page = (pageRes.success && pageRes.result !== undefined && pageRes.result !== null) ? pageRes.result : 0;
+
+      // Read settings FRESH from storage (not the in-memory state, which may not have finished
+      // its async load yet — right after a plugin update, an early insert could otherwise use
+      // the default "auto-remove ON" and delete clips against the user's saved "off").
+      const autoRemove = await StorageService.getAutoRemoveInserted();
+      const combine = await StorageService.getCombineInserted();
+      const linkSource = await StorageService.getInsertSourceLink();
 
       await PluginNoteAPI.saveCurrentNote();
 
@@ -803,6 +812,11 @@ export default function App() {
       // an oversized value made link/icon positions drift lower with each wrapped line.
       const lineHeight = Math.round(fontSize * 1.2);
       const gap = Math.round(lineHeight * 0.6);
+      // Text boxes render their glyphs inset from the frame's left edge; images draw
+      // edge-to-edge. To line images up with text (and clear the note's left toolbar), inset the
+      // image left by this much. Scaled to the font (calibrated on Manta: font 44 → ~26px inset,
+      // ≈0.6·fontSize) so it tracks the user's font choice; may need per-device tuning (e.g. Nomad).
+      const imageLeftInset = Math.round(fontSize * 0.6);
       const MIN_SPLIT_LINES = 3;
       const beforeIds = new Set<string>();
       // Count images already on this page (from a previous insert) so the one-figure-per-page
@@ -859,6 +873,8 @@ export default function App() {
         type: 'text' | 'image';
         text?: string;
         imagePath?: string;
+        width?: number;
+        height?: number;
         documentPath?: string;
         documentPage?: number;
         articleName?: string;
@@ -871,6 +887,8 @@ export default function App() {
             type: el.type,
             text: el.text,
             imagePath: el.imagePath,
+            width: el.width,
+            height: el.height,
             documentPath: el.documentPath,
             documentPage: el.documentPage,
             articleName: el.articleName || clip.articleName
@@ -1039,15 +1057,61 @@ export default function App() {
         return Array.from(uniqueLinksMap.values());
       };
 
+      // Insert an image and position it at the given rect. Supernote's insertImage centers the
+      // image by default; the recipe to place it: insert → save → getLastElement → recreate the
+      // element's backing PNG (deleted after save, else code 1211) from our clip image →
+      // modifyElements with pageNum/layerNum set (else code 107) + the target rect → save.
+      // Returns whether the reposition succeeded (false = image left centered as a fallback).
+      // Places the image at (100, top), fitting it within (maxW, maxH) while preserving aspect.
+      // CRITICAL: the size is derived from the element's OWN natural rect and NEVER upscaled —
+      // asking the note to render an image larger than its source PNG makes its OpenCV resize
+      // read past the image bounds and crash the note app (cv::Exception ROI assertion).
+      // Returns the placed height on success, or null (image left centered) on failure.
+      const insertPositionedImage = async (
+        imagePath: string,
+        top: number,
+        maxW: number,
+        maxH: number,
+      ): Promise<number | null> => {
+        await PluginNoteAPI.insertImage(imagePath);
+        await PluginNoteAPI.saveCurrentNote();
+        try {
+          const lastRes = await PluginFileAPI.getLastElement() as any;
+          const el = (lastRes && lastRes.result) ? lastRes.result : null;
+          if (el && el.type === 200 && el.picture && el.picture.rect) {
+            const r = el.picture.rect;
+            const natW = r.right - r.left, natH = r.bottom - r.top;
+            if (natW <= 0 || natH <= 0) return null;
+            // Never scale above 1 (no upscale) → the target never exceeds the source PNG.
+            const scale = Math.min(maxW / natW, maxH / natH, 1);
+            const targetW = Math.max(1, Math.round(natW * scale));
+            const targetH = Math.max(1, Math.round(natH * scale));
+            const picturePath = el.picture.picturePath;
+            if (picturePath && !(await FileUtils.exists(picturePath))) {
+              try { await FileUtils.copyFile(imagePath, picturePath); } catch (e) { /* fall through */ }
+            }
+            // Inset the image left to align with the text's visual left (see imageLeftInset).
+            const imgLeft = 100 + imageLeftInset;
+            const modified = {
+              ...el, pageNum: page, layerNum: 0,
+              picture: { ...el.picture, rect: { left: imgLeft, top, right: imgLeft + targetW, bottom: top + targetH } },
+            };
+            const modRes = await PluginFileAPI.modifyElements(notePath, page, [modified]) as any;
+            await PluginNoteAPI.saveCurrentNote();
+            return (modRes && modRes.success) ? targetH : null;
+          }
+        } catch (e) { /* best-effort: image stays centered */ }
+        return null;
+      };
+
       const insertedCountByClip: Record<string, number> = {};
       const splitRemainder: Record<string, string> = {}; // clipId -> un-inserted tail of a split clip
       let imagesInserted = existingImageCount;
-      let outOfSpace = false;    // text didn't fit; more on the next page
-      let imageLimitHit = false; // a figure was deferred (needs its own empty page)
+      let outOfSpace = false;    // content didn't fit; more on the next page
       let splitOccurred = false; // a single clip was split across pages
       let attemptedInserts = 0;
-      // A figure is always alone on its page (the SDK centers images and can't reposition
-      // them, so text would overlap). Once a page has any content, a figure is deferred.
+      // Images are positioned (insertPositionedImage) and stack like text; content is deferred
+      // to a new page only when it doesn't fit the remaining space.
       let pageHasContent = currentY > 100 || existingImageCount > 0;
 
       let i = 0;
@@ -1055,25 +1119,54 @@ export default function App() {
         const item = items[i];
 
         if (item.type === 'image') {
-          if (pageHasContent || imagesInserted >= 1) { imageLimitHit = true; break; }
-          if (item.imagePath) {
-            await PluginNoteAPI.insertImage(item.imagePath);
-            await PluginNoteAPI.saveCurrentNote();
-            imagesInserted++;
-            attemptedInserts++;
+          if (!item.imagePath) {
             insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
-            pageHasContent = true;
-            await new Promise(r => setTimeout(r, 300));
             i++;
-          } else {
-            i++;
+            continue;
           }
-          // The figure owns the page; whatever remains continues on the next page.
-          if (i < items.length) {
-            if (items[i].type === 'image') imageLimitHit = true;
-            else outOfSpace = true;
+          const linkReserve = (item.documentPath && linkSource) ? linkSpace : 0;
+          const availHeight = (pageHeight - gap) - currentY;
+          const fullPageAvail = (pageHeight - gap) - 100;
+          // Rough pre-check (stored crop dims, may be missing) to decide defer-vs-place BEFORE
+          // inserting. The ACTUAL size comes from the element's natural rect in
+          // insertPositionedImage (which never upscales), so this is only a hint.
+          const guessW = item.width && item.width > 0 ? item.width : Math.round(maxWidth * 0.6);
+          const guessH = item.height && item.height > 0 ? item.height : Math.round(maxWidth * 0.45);
+          const guessFitW = Math.min(maxWidth, guessW);
+          const guessFitH = Math.round(guessH * (guessFitW / guessW));
+          // If it won't fit the remaining space and the page already has content, move to a new page.
+          if (pageHasContent && guessFitH + linkReserve > availHeight) {
+            outOfSpace = true;
+            break;
           }
-          break;
+          const top = currentY;
+          const maxH = Math.max(1, (pageHasContent ? availHeight : fullPageAvail) - linkReserve);
+          // Reduce by the left inset so a full-width image's right edge still lands at the
+          // text's right margin (100 + maxWidth).
+          const placedH = await insertPositionedImage(item.imagePath, top, maxWidth - imageLeftInset, maxH);
+          attemptedInserts++;
+          insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
+          imagesInserted++;
+          pageHasContent = true;
+          await new Promise(r => setTimeout(r, 300));
+          i++;
+          if (placedH === null) {
+            // Reposition failed → the image is centered; don't stack more onto this page.
+            if (i < items.length) outOfSpace = true;
+            break;
+          }
+          currentY = top + placedH;
+          // Source jump icon under the image, right-aligned (when enabled).
+          if (item.documentPath && linkSource) {
+            const validLinks = await getValidLinksForGroup([item]);
+            if (validLinks.length > 0) {
+              const iconTop = currentY + linkGap;
+              await performInsertJumpIcon(validLinks[0].path, validLinks[0].page, iconTop);
+              currentY = iconTop + linkHeight;
+            }
+          }
+          currentY += gap;
+          continue; // images stack like text
         }
 
         // Empty/whitespace-only text elements carry no content — count them as "inserted"
@@ -1082,7 +1175,7 @@ export default function App() {
 
         const availHeight = (pageHeight - gap) - currentY;
 
-        if (combineInserted) {
+        if (combine) {
           // Combine consecutive whole text items that fit into a single text box, separated
           // by one blank line. Spacing is then a literal blank line — uniform, not dependent
           // on the (fixed-height-box) height estimate.
@@ -1113,7 +1206,7 @@ export default function App() {
             attemptedInserts++;
             group.forEach((g) => { insertedCountByClip[g.clipId] = (insertedCountByClip[g.clipId] || 0) + 1; });
 
-            const validLinks = insertSourceLink ? await getValidLinksForGroup(group) : [];
+            const validLinks = linkSource ? await getValidLinksForGroup(group) : [];
             if (validLinks.length > 0) {
               // Combine mode: stack labeled links after the box so each is identifiable.
               let ny = currentY + groupHeight + linkGap;
@@ -1130,8 +1223,7 @@ export default function App() {
             await new Promise(r => setTimeout(r, 300));
             // One combined box per page: whatever remains continues on the next page.
             if (i < items.length) {
-              if (items[i].type === 'image') imageLimitHit = true; // figure needs its own page
-              else outOfSpace = true;
+              outOfSpace = true;
             }
             break;
           }
@@ -1151,7 +1243,7 @@ export default function App() {
           insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
 
           let linksInserted = false;
-          if (item.documentPath && insertSourceLink) {
+          if (item.documentPath && linkSource) {
             const validLinks = await getValidLinksForGroup([item]);
             if (validLinks.length > 0) {
               // Icon on the last text line at the right margin (no extra line → even spacing).
@@ -1163,7 +1255,7 @@ export default function App() {
           pageHasContent = true;
           i++;
           await new Promise(r => setTimeout(r, 300));
-          if (combineInserted) break; // combine handles multi-item via the group; be safe
+          if (combine) break; // combine handles multi-item via the group; be safe
           continue; // separate mode: keep stacking boxes on this page
         } else {
           // When auto-remove is OFF the clip is kept intact, so we can't trim it down to the
@@ -1172,7 +1264,7 @@ export default function App() {
           // fresh page instead, as long as it fits on one (a clip taller than a full page has
           // no choice but to split).
           const fullPageAvail = (pageHeight - gap) - 100;
-          if (!autoRemoveInserted && totalSingleHeight <= fullPageAvail) {
+          if (!autoRemove && totalSingleHeight <= fullPageAvail) {
             outOfSpace = true;
             break;
           }
@@ -1188,7 +1280,7 @@ export default function App() {
           attemptedInserts++;
           if (remainder) { splitRemainder[item.clipId] = remainder; splitOccurred = true; }
 
-          if (item.documentPath && insertSourceLink) {
+          if (item.documentPath && linkSource) {
             const validLinks = await getValidLinksForGroup([item]);
             if (validLinks.length > 0) {
               currentY = await placeJumpIconForBlock(currentY, chunkWrap.lines, chunkWrap.lastLineChars, validLinks);
@@ -1218,7 +1310,7 @@ export default function App() {
       } catch (e) { /* best-effort */ }
 
       const allPersisted = attemptedInserts > 0 && persistedNew >= attemptedInserts;
-      if (allPersisted && autoRemoveInserted) {
+      if (allPersisted && autoRemove) {
         // Now it's safe to remove inserted content from Clipper. Per clip:
         //  - split: drop the fully-inserted leading elements and keep only the un-inserted
         //    tail of the split text element (so re-inserting continues, not duplicates);
@@ -1255,21 +1347,11 @@ export default function App() {
           ToastAndroid.LONG
         );
         PluginManager.closePluginView();
-      } else if (imageLimitHit) {
-        // Checked before the generic persist failure: when the only remaining content is a
-        // deferred image, nothing is attempted (attemptedElems === 0 → allPersisted false),
-        // which would otherwise mis-report as a persistence failure.
-        ToastAndroid.show(
-          'Figures go on their own page. Turn to a blank page, then Insert to place the figure.',
-          ToastAndroid.LONG
-        );
-        // Return to the note so the user can add a page for the remaining figure(s).
-        PluginManager.closePluginView();
       } else if (!allPersisted) {
         ToastAndroid.show('Some clips could not be inserted; they are kept in Clipper.', ToastAndroid.LONG);
       } else {
         ToastAndroid.show(
-          autoRemoveInserted ? 'Clips inserted successfully!' : 'Clips inserted (kept in Clipper)',
+          autoRemove ? 'Clips inserted successfully!' : 'Clips inserted (kept in Clipper)',
           ToastAndroid.SHORT
         );
         // Return to the document to show the newly inserted content.
@@ -1277,6 +1359,9 @@ export default function App() {
       }
     } catch (e: any) {
       ToastAndroid.show(`Insert failed: ${e.message}`, ToastAndroid.SHORT);
+    } finally {
+      insertingRef.current = false;
+      setIsInserting(false);
     }
   };
 
@@ -1346,10 +1431,16 @@ export default function App() {
     );
   }
 
+  // Hold back the dashboard until the launch mode is known, so a prompt/crop launch shows the
+  // dialog directly instead of flashing the (possibly still-loading) dashboard first.
+  if (!contextResolved) {
+    return <SafeAreaView style={styles.safeArea} />;
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-        
+
         {/* Header Section */}
         <View style={styles.header}>
           <View style={styles.headerTitleRow}>
@@ -1433,7 +1524,7 @@ export default function App() {
             <View style={styles.btnRow}>
               <HighContrastButton label="Copy Visible" onPress={handleCopyAllVisible} disabled={processedClips.length === 0} />
               {isNoteFile && (
-                <HighContrastButton label="Insert into open Note" onPress={handleInsertVisible} disabled={processedClips.length === 0} />
+                <HighContrastButton label="Insert into open Note" onPress={handleInsertVisible} disabled={processedClips.length === 0 || isInserting} />
               )}
               <HighContrastButton label="Clear All" onPress={handleClearAll} disabled={clips.length === 0} />
             </View>
@@ -1442,8 +1533,8 @@ export default function App() {
               {isNoteFile ? (
                 <>
                   <View style={styles.btnRow}>
-                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={selectionHasImage} />
-                    <HighContrastButton label="Insert into open Note" onPress={handleInsertSelected} />
+                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={!selectionHasText} />
+                    <HighContrastButton label="Insert into open Note" onPress={handleInsertSelected} disabled={isInserting} />
                     <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
                   </View>
                   <View style={styles.btnRow}>
@@ -1455,7 +1546,7 @@ export default function App() {
               ) : (
                 <>
                   <View style={styles.btnRow}>
-                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={selectionHasImage} />
+                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={!selectionHasText} />
                     <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
                     <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
                   </View>

@@ -76,8 +76,10 @@ PluginManager.registerButtonListener({
             ToastAndroid.show('Clipped as Text!', ToastAndroid.SHORT);
           } else {
             // Case B: <= 5 words -> Prompt user (launches UI programmatically)
-            await ClipService.setPromptText(selectedText);
-            await ClipService.setLaunchMode('prompt');
+            await Promise.all([
+              ClipService.setPromptText(selectedText),
+              ClipService.setLaunchMode('prompt'),
+            ]);
             await PluginManager.showPluginView();
           }
         }
