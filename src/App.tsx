@@ -13,6 +13,8 @@ import {
   AppState,
   ScrollView,
   FlatList,
+  TextInput,
+  Modal,
 } from 'react-native';
 import { ClipService } from './services/ClipService';
 import { ClipItem, ClipSubElement, StorageService, DEFAULT_INSERT_FONT_SIZE } from './services/StorageService';
@@ -119,6 +121,32 @@ export default function App() {
   const [isScanningToc, setIsScanningToc] = useState(false);
   const [isScanningIndex, setIsScanningIndex] = useState(false);
   const [indexSearchQuery, setIndexSearchQuery] = useState('');
+
+  const [editingHeading, setEditingHeading] = useState<HeadingItem | null>(null);
+  const [editTitleInput, setEditTitleInput] = useState<string>('');
+
+  const handleOpenEditHeadingModal = (h: HeadingItem) => {
+    setEditingHeading(h);
+    setEditTitleInput(h.title);
+  };
+
+  const handleSaveHeadingTitle = async () => {
+    if (!editingHeading || !currentFilePath) return;
+    try {
+      const newTitle = editTitleInput.trim() || `Heading ${editingHeading.page}`;
+      const overrides = await StorageService.getHeadingOverrides(currentFilePath);
+      overrides[editingHeading.id] = newTitle;
+      await StorageService.saveHeadingOverrides(currentFilePath, overrides);
+
+      setHeadings(prev => prev.map(h => h.id === editingHeading.id ? { ...h, title: newTitle } : h));
+      setEditingHeading(null);
+      ToastAndroid.show('Heading title updated!', ToastAndroid.SHORT);
+    } catch (e) {
+      ToastAndroid.show('Failed to save title', ToastAndroid.SHORT);
+    }
+  };
+
+
 
   // True while an insert is running — disables the Insert button so rapid taps can't kick off
   // a second concurrent insert (which would duplicate content). insertingRef guards re-entry
@@ -563,6 +591,20 @@ export default function App() {
       PluginManager.closePluginView();
     } catch (err: any) {
       ToastAndroid.show(`Failed to open source document: ${err.message}`, ToastAndroid.SHORT);
+    }
+  };
+
+  const handleJumpToNotePage = async (pageNumber: number) => {
+    if (!currentFilePath) return;
+    try {
+      const pageIndex = Math.max(0, pageNumber - 1);
+      const { NativeModules } = require('react-native');
+      if (NativeModules.ImageCropModule && typeof NativeModules.ImageCropModule.openFileDirectly === 'function') {
+        await NativeModules.ImageCropModule.openFileDirectly(currentFilePath, pageIndex);
+      }
+      PluginManager.closePluginView();
+    } catch (err: any) {
+      ToastAndroid.show(`Failed to jump to page: ${err.message}`, ToastAndroid.SHORT);
     }
   };
 
@@ -1413,15 +1455,17 @@ export default function App() {
     }
     setIsScanningToc(true);
     try {
-      const success = await IndexService.generateTocPage(currentFilePath);
-      if (success) {
-        ToastAndroid.show('Table of Contents generated at Page 1!', ToastAndroid.SHORT);
+      const res = await IndexService.generateTocPage(currentFilePath, insertFontSize);
+      const items = await IndexService.scanHeadings(currentFilePath);
+      setHeadings(items);
+      if (res.success) {
+        ToastAndroid.show(res.message || 'Table of Contents generated at Page 1!', ToastAndroid.LONG);
         PluginManager.closePluginView();
       } else {
-        ToastAndroid.show('Failed to generate ToC page (no headings found)', ToastAndroid.SHORT);
+        ToastAndroid.show(res.message || 'Failed to generate ToC page', ToastAndroid.LONG);
       }
     } catch (e: any) {
-      ToastAndroid.show('Failed to generate ToC page', ToastAndroid.SHORT);
+      ToastAndroid.show('Failed to generate ToC page', ToastAndroid.LONG);
     } finally {
       setIsScanningToc(false);
     }
@@ -1453,15 +1497,15 @@ export default function App() {
     }
     setIsScanningIndex(true);
     try {
-      const success = await IndexService.generateIndexPage(currentFilePath);
-      if (success) {
-        ToastAndroid.show('Keyword Index generated at Last Page!', ToastAndroid.SHORT);
+      const res = await IndexService.generateIndexPage(currentFilePath, insertFontSize);
+      if (res.success) {
+        ToastAndroid.show(res.message || 'Keyword Index generated at Last Page!', ToastAndroid.LONG);
         PluginManager.closePluginView();
       } else {
-        ToastAndroid.show('Failed to generate Keyword Index page', ToastAndroid.SHORT);
+        ToastAndroid.show(res.message || 'Failed to generate Keyword Index page', ToastAndroid.LONG);
       }
     } catch (e: any) {
-      ToastAndroid.show('Failed to generate Keyword Index page', ToastAndroid.SHORT);
+      ToastAndroid.show('Failed to generate Keyword Index page', ToastAndroid.LONG);
     } finally {
       setIsScanningIndex(false);
     }
@@ -1713,15 +1757,23 @@ export default function App() {
                 </Text>
               ) : (
                 headings.map((h, idx) => (
-                  <View key={idx} style={styles.tocCard}>
+                  <View key={h.id || idx} style={styles.tocCard}>
                     <Text style={styles.tocTitle}>{`${idx + 1}. ${h.title}`}</Text>
                     <Text style={styles.tocPage}>Page {h.page}</Text>
-                    <Pressable
-                      onPress={() => handleOpenSource(currentFilePath || '', h.page)}
-                      style={styles.jumpButton}
-                    >
-                      <Text style={styles.jumpButtonText}>↗ Jump</Text>
-                    </Pressable>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Pressable
+                        onPress={() => handleOpenEditHeadingModal(h)}
+                        style={styles.editButton}
+                      >
+                        <Text style={styles.editButtonText}>✏️ Edit</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => handleJumpToNotePage(h.page)}
+                        style={styles.jumpButton}
+                      >
+                        <Text style={styles.jumpButtonText}>↗ Jump</Text>
+                      </Pressable>
+                    </View>
                   </View>
                 ))
               )}
@@ -1769,7 +1821,7 @@ export default function App() {
                       <Text style={styles.indexWord}>{kw.keyword}</Text>
                       {kw.pages.length > 0 && (
                         <Pressable
-                          onPress={() => handleOpenSource(currentFilePath || '', kw.pages[0])}
+                          onPress={() => handleJumpToNotePage(kw.pages[0])}
                           style={styles.jumpButton}
                         >
                           <Text style={styles.jumpButtonText}>↗ Jump (p. {kw.pages[0]})</Text>
@@ -1848,6 +1900,16 @@ export default function App() {
             setInsertFontSize(size);
             StorageService.setInsertFontSize(size);
           }}
+          enableToc={enableToc}
+          onEnableTocChange={(value) => {
+            setEnableToc(value);
+            StorageService.setEnableToc(value);
+          }}
+          enableKeywordIndex={enableKeywordIndex}
+          onEnableKeywordIndexChange={(value) => {
+            setEnableKeywordIndex(value);
+            StorageService.setEnableKeywordIndex(value);
+          }}
           onResetToDefault={() => {
             // Restore every setting to its application default.
             setAutoRemoveInserted(true); StorageService.setAutoRemoveInserted(true);
@@ -1855,6 +1917,8 @@ export default function App() {
             setInsertFontSize(DEFAULT_INSERT_FONT_SIZE); StorageService.setInsertFontSize(DEFAULT_INSERT_FONT_SIZE);
             setShowSourceInClipper(true); StorageService.setShowSourceInClipper(true);
             setInsertSourceLink(true); StorageService.setInsertSourceLink(true);
+            setEnableToc(true); StorageService.setEnableToc(true);
+            setEnableKeywordIndex(true); StorageService.setEnableKeywordIndex(true);
             ToastAndroid.show('Settings reset to default.', ToastAndroid.SHORT);
           }}
           onClose={() => setIsSettingsOpen(false)}
@@ -1872,6 +1936,44 @@ export default function App() {
         }}
         onCancel={() => setShowConfirmDialog(false)}
       />
+
+      {/* Modal for Editing Heading Title */}
+      {editingHeading && (
+        <Modal
+          transparent
+          animationType="fade"
+          visible={!!editingHeading}
+          onRequestClose={() => setEditingHeading(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Edit Heading Title (Page {editingHeading.page})</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editTitleInput}
+                onChangeText={setEditTitleInput}
+                placeholder="Enter title name..."
+                placeholderTextColor="#666666"
+                autoFocus
+              />
+              <View style={styles.modalBtnRow}>
+                <Pressable
+                  style={[styles.modalBtn, styles.modalBtnCancel]}
+                  onPress={() => setEditingHeading(null)}
+                >
+                  <Text style={styles.modalBtnCancelText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.modalBtn, styles.modalBtnSave]}
+                  onPress={handleSaveHeadingTitle}
+                >
+                  <Text style={styles.modalBtnSaveText}>Save</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
     </SafeAreaView>
   );
 }
@@ -2056,6 +2158,76 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: 'bold',
     color: '#000000',
+  },
+  editButton: {
+    borderWidth: 1,
+    borderColor: '#000000',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#ffffff',
+  },
+  editButtonText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 480,
+    backgroundColor: '#ffffff',
+    borderWidth: 2,
+    borderColor: '#000000',
+    borderRadius: 8,
+    padding: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#000000',
+    marginBottom: 12,
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderColor: '#000000',
+    borderRadius: 4,
+    padding: 10,
+    fontSize: 16,
+    color: '#000000',
+    backgroundColor: '#ffffff',
+    marginBottom: 16,
+  },
+  modalBtnRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+  },
+  modalBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#000000',
+  },
+  modalBtnCancel: {
+    backgroundColor: '#f5f5f5',
+  },
+  modalBtnCancelText: {
+    color: '#000000',
+    fontWeight: 'bold',
+  },
+  modalBtnSave: {
+    backgroundColor: '#000000',
+  },
+  modalBtnSaveText: {
+    color: '#ffffff',
+    fontWeight: 'bold',
   },
   indexCard: {
     padding: 12,

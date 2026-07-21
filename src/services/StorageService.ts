@@ -36,6 +36,34 @@ export const DEFAULT_INSERT_FONT_SIZE = INSERT_FONT_SIZES.medium;
 
 export class StorageService {
   /**
+   * Save custom heading title overrides for a specific note file.
+   */
+  static async saveHeadingOverrides(notePath: string, overrides: Record<string, string>): Promise<void> {
+    try {
+      if (!notePath) return;
+      await AsyncStorage.setItem(`clipper_heading_overrides_${notePath}`, JSON.stringify(overrides));
+    } catch (e) {
+      console.error('Failed to save heading overrides:', e);
+    }
+  }
+
+  /**
+   * Load custom heading title overrides for a specific note file.
+   */
+  static async getHeadingOverrides(notePath: string): Promise<Record<string, string>> {
+    try {
+      if (!notePath) return {};
+      const data = await AsyncStorage.getItem(`clipper_heading_overrides_${notePath}`);
+      if (data) {
+        return JSON.parse(data);
+      }
+    } catch (e) {
+      console.error('Failed to load heading overrides:', e);
+    }
+    return {};
+  }
+
+  /**
    * Save the accumulated clips list to storage.
    */
   static async saveClips(clips: ClipItem[]): Promise<void> {
@@ -88,18 +116,11 @@ export class StorageService {
   }
 
   /**
-   * Save the clipper launch mode. AsyncStorage is the durable source of truth (it survives
-   * a plugin-process/RN recreation between the background handler setting the mode and the
-   * App reading it); the native static is also set, purely so it can emit onLaunchModeChange
-   * synchronously to wake an already-mounted App. Every native write goes through here, so
-   * the two stay in sync.
+   * Save the clipper launch mode.
    */
   static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped'): Promise<void> {
     try {
       await AsyncStorage.setItem('clipper_launch_mode', mode);
-      // Await the native mirror: it emits onLaunchModeChange, which lets the App run
-      // checkContext and show the prompt BEFORE the UI comes to the foreground. Making this
-      // fire-and-forget reordered things so the dashboard flashed before the prompt.
       const { NativeModules } = require('react-native');
       const { ImageCropModule } = NativeModules;
       if (ImageCropModule && typeof ImageCropModule.setLaunchMode === 'function') {
@@ -124,8 +145,7 @@ export class StorageService {
   }
 
   /**
-   * Save the clipper prompt text context. Persisted to AsyncStorage (durable) and mirrored
-   * to the native static so both stay in sync (see setLaunchMode).
+   * Save the clipper prompt text context.
    */
   static async setPromptText(text: string): Promise<void> {
     try {
@@ -186,7 +206,6 @@ export class StorageService {
     try {
       const value = await AsyncStorage.getItem(INSERT_FONT_SIZE_KEY);
       const parsed = value ? parseInt(value, 10) : NaN;
-      // Only accept a known preset — guards against a corrupted/extreme stored value.
       if (Object.values(INSERT_FONT_SIZES).includes(parsed as any)) return parsed;
     } catch (e) {
       console.error('Failed to load insert font size:', e);
@@ -206,14 +225,12 @@ export class StorageService {
   }
 
   /**
-   * Whether inserted text clips are combined into a single text box (default false). When
-   * false, each clip is inserted as its own text box (keeping a per-clip inline source link,
-   * which matches the plugin's per-document referencing purpose).
+   * Whether inserted text clips are combined into a single text box (default false).
    */
   static async getCombineInserted(): Promise<boolean> {
     try {
       const value = await AsyncStorage.getItem(COMBINE_INSERTED_KEY);
-      if (value === null) return false; // default off
+      if (value === null) return false;
       return value === 'true';
     } catch (e) {
       console.error('Failed to load combine-inserted setting:', e);
@@ -238,7 +255,7 @@ export class StorageService {
   static async getShowSourceInClipper(): Promise<boolean> {
     try {
       const value = await AsyncStorage.getItem(SHOW_SOURCE_KEY);
-      if (value === null) return true; // default on
+      if (value === null) return true;
       return value === 'true';
     } catch (e) {
       console.error('Failed to load show-source setting:', e);
@@ -263,7 +280,7 @@ export class StorageService {
   static async getInsertSourceLink(): Promise<boolean> {
     try {
       const value = await AsyncStorage.getItem(INSERT_SOURCE_LINK_KEY);
-      if (value === null) return true; // default on
+      if (value === null) return true;
       return value === 'true';
     } catch (e) {
       console.error('Failed to load insert-source-link setting:', e);
@@ -288,7 +305,7 @@ export class StorageService {
   static async getEnableToc(): Promise<boolean> {
     try {
       const value = await AsyncStorage.getItem(ENABLE_TOC_KEY);
-      if (value === null) return true; // default on
+      if (value === null) return true;
       return value === 'true';
     } catch (e) {
       console.error('Failed to load enable-toc setting:', e);
@@ -313,7 +330,7 @@ export class StorageService {
   static async getEnableKeywordIndex(): Promise<boolean> {
     try {
       const value = await AsyncStorage.getItem(ENABLE_KEYWORD_INDEX_KEY);
-      if (value === null) return true; // default on
+      if (value === null) return true;
       return value === 'true';
     } catch (e) {
       console.error('Failed to load enable-keyword-index setting:', e);
