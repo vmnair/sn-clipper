@@ -11,6 +11,8 @@ import {
   Pressable,
   Image,
   AppState,
+  ScrollView,
+  FlatList,
 } from 'react-native';
 import { ClipService } from './services/ClipService';
 import { ClipItem, ClipSubElement, StorageService, DEFAULT_INSERT_FONT_SIZE } from './services/StorageService';
@@ -22,6 +24,7 @@ import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { SearchBar } from './components/SearchBar';
 import { FilterPopover } from './components/FilterPopover';
 import { SettingsPopover } from './components/SettingsPopover';
+import { IndexService, HeadingItem, KeywordOccurrence } from './services/IndexService';
 import { ClipList } from './components/ClipList';
 import { deriveArticleName, isDocFile } from './utils/paths';
 import { splitTextToFit, countWrappedLines, measureWrappedText } from './utils/text';
@@ -106,6 +109,16 @@ export default function App() {
   // gate the two display surfaces: the Clipper card jump icon, and the inserted-note link.
   const [showSourceInClipper, setShowSourceInClipper] = useState(true);
   const [insertSourceLink, setInsertSourceLink] = useState(true);
+  const [enableToc, setEnableToc] = useState(true);
+  const [enableKeywordIndex, setEnableKeywordIndex] = useState(true);
+
+  // Tab State: 'clips' | 'toc' | 'index'
+  const [activeTab, setActiveTab] = useState<'clips' | 'toc' | 'index'>('clips');
+  const [headings, setHeadings] = useState<HeadingItem[]>([]);
+  const [keywords, setKeywords] = useState<KeywordOccurrence[]>([]);
+  const [isScanningToc, setIsScanningToc] = useState(false);
+  const [isScanningIndex, setIsScanningIndex] = useState(false);
+  const [indexSearchQuery, setIndexSearchQuery] = useState('');
 
   // True while an insert is running — disables the Insert button so rapid taps can't kick off
   // a second concurrent insert (which would duplicate content). insertingRef guards re-entry
@@ -152,6 +165,8 @@ export default function App() {
     StorageService.getCombineInserted().then(setCombineInserted);
     StorageService.getShowSourceInClipper().then(setShowSourceInClipper);
     StorageService.getInsertSourceLink().then(setInsertSourceLink);
+    StorageService.getEnableToc().then(setEnableToc);
+    StorageService.getEnableKeywordIndex().then(setEnableKeywordIndex);
 
     // Check active file context (Note vs Document)
     const runContextCheck = async () => {
@@ -346,6 +361,12 @@ export default function App() {
     const sources = clips.map((c) => c.articleName).filter(Boolean);
     return Array.from(new Set(sources));
   }, [clips]);
+
+  const filteredKeywords = useMemo(() => {
+    if (!indexSearchQuery.trim()) return keywords;
+    const q = indexSearchQuery.toLowerCase();
+    return keywords.filter((k) => k.keyword.toLowerCase().includes(q));
+  }, [keywords, indexSearchQuery]);
 
   // Memoized Filter & Sort Selector
   const processedClips = useMemo(() => {
@@ -1365,6 +1386,87 @@ export default function App() {
     }
   };
 
+  // Handlers for Table of Contents & Keyword Index
+  const handleRefreshToc = async () => {
+    if (!currentFilePath) {
+      ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
+      return;
+    }
+    setIsScanningToc(true);
+    try {
+      const items = await IndexService.scanHeadings(currentFilePath);
+      setHeadings(items);
+      if (items.length === 0) {
+        ToastAndroid.show('No headings found in this note', ToastAndroid.SHORT);
+      }
+    } catch (e: any) {
+      ToastAndroid.show('Failed to scan headings', ToastAndroid.SHORT);
+    } finally {
+      setIsScanningToc(false);
+    }
+  };
+
+  const handleGenerateTocPage = async () => {
+    if (!currentFilePath) {
+      ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
+      return;
+    }
+    setIsScanningToc(true);
+    try {
+      const success = await IndexService.generateTocPage(currentFilePath);
+      if (success) {
+        ToastAndroid.show('Table of Contents generated at Page 1!', ToastAndroid.SHORT);
+        PluginManager.closePluginView();
+      } else {
+        ToastAndroid.show('Failed to generate ToC page (no headings found)', ToastAndroid.SHORT);
+      }
+    } catch (e: any) {
+      ToastAndroid.show('Failed to generate ToC page', ToastAndroid.SHORT);
+    } finally {
+      setIsScanningToc(false);
+    }
+  };
+
+  const handleRefreshIndex = async () => {
+    if (!currentFilePath) {
+      ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
+      return;
+    }
+    setIsScanningIndex(true);
+    try {
+      const items = await IndexService.scanKeywords(currentFilePath);
+      setKeywords(items);
+      if (items.length === 0) {
+        ToastAndroid.show('No keywords found in this note', ToastAndroid.SHORT);
+      }
+    } catch (e: any) {
+      ToastAndroid.show('Failed to scan keywords', ToastAndroid.SHORT);
+    } finally {
+      setIsScanningIndex(false);
+    }
+  };
+
+  const handleGenerateIndexPage = async () => {
+    if (!currentFilePath) {
+      ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
+      return;
+    }
+    setIsScanningIndex(true);
+    try {
+      const success = await IndexService.generateIndexPage(currentFilePath);
+      if (success) {
+        ToastAndroid.show('Keyword Index generated at Last Page!', ToastAndroid.SHORT);
+        PluginManager.closePluginView();
+      } else {
+        ToastAndroid.show('Failed to generate Keyword Index page', ToastAndroid.SHORT);
+      }
+    } catch (e: any) {
+      ToastAndroid.show('Failed to generate Keyword Index page', ToastAndroid.SHORT);
+    } finally {
+      setIsScanningIndex(false);
+    }
+  };
+
   if (isCropping) {
     return (
       <View style={styles.cropRoot}>
@@ -1451,10 +1553,6 @@ export default function App() {
             </View>
             <Text style={styles.title}>Clipper</Text>
             <View style={styles.headerIcons}>
-              {/* Region capture is done from the reader: highlight text → the "Clip"
-                  entry in the selection popup. That path screenshots the live reader
-                  page (crisp, correct for EPUB); an in-Clipper button cannot (the
-                  reader isn't on screen) so it was removed. */}
               <Pressable onPress={toggleSearch} style={styles.iconButton} testID="search-btn">
                 <Image source={require('../assets/icon/search.png')} style={styles.iconImage} />
               </Pressable>
@@ -1466,99 +1564,240 @@ export default function App() {
               </Pressable>
             </View>
           </View>
-          <View style={styles.headerSubtitleRow}>
-            <Text style={styles.subtitle}>
-              {isSelectionMode 
-                ? `${selectedIds.length} of ${processedClips.length} clip(s) selected` 
-                : `${processedClips.length} clip(s) visible`}
-            </Text>
-            {(activeSourceFilter !== null || (isSearchVisible && searchQuery.trim() !== '')) && (
-              <View style={styles.headerChips}>
-                {isSearchVisible && searchQuery.trim() !== '' && (
-                  <Pressable
-                    onPress={() => setSearchQuery('')}
-                    style={styles.headerChip}
-                  >
-                    <Text style={styles.headerChipText} numberOfLines={1}>Search: "{searchQuery}"</Text>
-                    <Image source={require('../assets/icon/clear.png')} style={styles.headerChipClearImage} />
-                  </Pressable>
-                )}
-                {activeSourceFilter !== null && (
-                  <Pressable
-                    onPress={() => setActiveSourceFilter(null)}
-                    style={styles.headerChip}
-                  >
-                    <Text style={styles.headerChipText} numberOfLines={1}>Source: {activeSourceFilter}</Text>
-                    <Image source={require('../assets/icon/clear.png')} style={styles.headerChipClearImage} />
-                  </Pressable>
-                )}
-              </View>
+        </View>
+
+        {/* Navigation Bar (Tabs) */}
+        {(enableToc || enableKeywordIndex) && (
+          <View style={styles.navTabBar}>
+            <Pressable
+              onPress={() => setActiveTab('clips')}
+              style={[styles.navTab, activeTab === 'clips' && styles.navTabActive]}
+            >
+              <Text style={[styles.navTabText, activeTab === 'clips' && styles.navTabTextActive]}>
+                📋 Clips ({clips.length})
+              </Text>
+            </Pressable>
+            {enableToc && (
+              <Pressable
+                onPress={() => {
+                  setActiveTab('toc');
+                  if (headings.length === 0) handleRefreshToc();
+                }}
+                style={[styles.navTab, activeTab === 'toc' && styles.navTabActive]}
+              >
+                <Text style={[styles.navTabText, activeTab === 'toc' && styles.navTabTextActive]}>
+                  📖 ToC ({headings.length})
+                </Text>
+              </Pressable>
+            )}
+            {enableKeywordIndex && (
+              <Pressable
+                onPress={() => {
+                  setActiveTab('index');
+                  if (keywords.length === 0) handleRefreshIndex();
+                }}
+                style={[styles.navTab, activeTab === 'index' && styles.navTabActive]}
+              >
+                <Text style={[styles.navTabText, activeTab === 'index' && styles.navTabTextActive]}>
+                  🏷️ Index ({keywords.length})
+                </Text>
+              </Pressable>
             )}
           </View>
-        </View>
-
-        {/* Toggleable Search Bar */}
-        {isSearchVisible && (
-          <SearchBar
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            onClear={() => setSearchQuery('')}
-          />
         )}
 
-        {/* Scrollable list of clippings */}
-        <ClipList
-          data={processedClips}
-          totalCount={clips.length}
-          selectedIds={selectedIds}
-          isSelectionMode={isSelectionMode}
-          onCardPress={handleCardPress}
-          onCardLongPress={handleCardLongPress}
-          onOpenSource={handleOpenSource}
-          showSource={showSourceInClipper}
-        />
-
-        {/* Footer Actions Area */}
-        <View style={styles.footer}>
-          {!isSelectionMode ? (
-            <View style={styles.btnRow}>
-              <HighContrastButton label="Copy Visible" onPress={handleCopyAllVisible} disabled={processedClips.length === 0} />
-              {isNoteFile && (
-                <HighContrastButton label="Insert into open Note" onPress={handleInsertVisible} disabled={processedClips.length === 0 || isInserting} />
+        {/* Tab 1: Clips View */}
+        {activeTab === 'clips' && (
+          <>
+            {/* Subtitle / Status row */}
+            <View style={styles.headerSubtitleRow}>
+              <Text style={styles.subtitle}>
+                {isSelectionMode 
+                  ? `${selectedIds.length} of ${processedClips.length} clip(s) selected` 
+                  : `${processedClips.length} clip(s) visible`}
+              </Text>
+              {(activeSourceFilter !== null || (isSearchVisible && searchQuery.trim() !== '')) && (
+                <View style={styles.headerChips}>
+                  {isSearchVisible && searchQuery.trim() !== '' && (
+                    <Pressable onPress={() => setSearchQuery('')} style={styles.headerChip}>
+                      <Text style={styles.headerChipText} numberOfLines={1}>Search: "{searchQuery}"</Text>
+                      <Image source={require('../assets/icon/clear.png')} style={styles.headerChipClearImage} />
+                    </Pressable>
+                  )}
+                  {activeSourceFilter !== null && (
+                    <Pressable onPress={() => setActiveSourceFilter(null)} style={styles.headerChip}>
+                      <Text style={styles.headerChipText} numberOfLines={1}>Source: {activeSourceFilter}</Text>
+                      <Image source={require('../assets/icon/clear.png')} style={styles.headerChipClearImage} />
+                    </Pressable>
+                  )}
+                </View>
               )}
-              <HighContrastButton label="Clear All" onPress={handleClearAll} disabled={clips.length === 0} />
             </View>
-          ) : (
-            <>
-              {isNoteFile ? (
-                <>
-                  <View style={styles.btnRow}>
-                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={!selectionHasText} />
-                    <HighContrastButton label="Insert into open Note" onPress={handleInsertSelected} disabled={isInserting} />
-                    <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
-                  </View>
-                  <View style={styles.btnRow}>
-                    <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
-                    <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
-                    <HighContrastButton label="Cancel" onPress={handleCancel} />
-                  </View>
-                </>
+
+            {/* Toggleable Search Bar */}
+            {isSearchVisible && (
+              <SearchBar
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                onClear={() => setSearchQuery('')}
+              />
+            )}
+
+            {/* Scrollable list of clippings */}
+            <ClipList
+              data={processedClips}
+              totalCount={clips.length}
+              selectedIds={selectedIds}
+              isSelectionMode={isSelectionMode}
+              onCardPress={handleCardPress}
+              onCardLongPress={handleCardLongPress}
+              onOpenSource={handleOpenSource}
+              showSource={showSourceInClipper}
+            />
+
+            {/* Footer Actions Area */}
+            <View style={styles.footer}>
+              {!isSelectionMode ? (
+                <View style={styles.btnRow}>
+                  <HighContrastButton label="Copy Visible" onPress={handleCopyAllVisible} disabled={processedClips.length === 0} />
+                  {isNoteFile && (
+                    <HighContrastButton label="Insert into open Note" onPress={handleInsertVisible} disabled={processedClips.length === 0 || isInserting} />
+                  )}
+                  <HighContrastButton label="Clear All" onPress={handleClearAll} disabled={clips.length === 0} />
+                </View>
               ) : (
                 <>
-                  <View style={styles.btnRow}>
-                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={!selectionHasText} />
-                    <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
-                    <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
-                  </View>
-                  <View style={styles.btnRow}>
-                    <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
-                    <HighContrastButton label="Cancel" onPress={handleCancel} />
-                  </View>
+                  {isNoteFile ? (
+                    <>
+                      <View style={styles.btnRow}>
+                        <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={!selectionHasText} />
+                        <HighContrastButton label="Insert into open Note" onPress={handleInsertSelected} disabled={isInserting} />
+                        <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
+                      </View>
+                      <View style={styles.btnRow}>
+                        <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
+                        <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
+                        <HighContrastButton label="Cancel" onPress={handleCancel} />
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      <View style={styles.btnRow}>
+                        <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={!selectionHasText} />
+                        <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
+                        <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
+                      </View>
+                      <View style={styles.btnRow}>
+                        <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
+                        <HighContrastButton label="Cancel" onPress={handleCancel} />
+                      </View>
+                    </>
+                  )}
                 </>
               )}
-            </>
-          )}
-        </View>
+            </View>
+          </>
+        )}
+
+        {/* Tab 2: Table of Contents View */}
+        {activeTab === 'toc' && (
+          <View style={styles.tabViewContainer}>
+            <Text style={styles.subtitle}>
+              {isScanningToc ? 'Scanning note headings...' : `${headings.length} heading(s) found in open note`}
+            </Text>
+
+            <ScrollView style={{ flex: 1, marginVertical: 12 }}>
+              {headings.length === 0 ? (
+                <Text style={{ textAlign: 'center', marginVertical: 32, fontSize: 16, color: '#666' }}>
+                  No headings detected. Add titles/headings in your note to generate a Table of Contents.
+                </Text>
+              ) : (
+                headings.map((h, idx) => (
+                  <View key={idx} style={styles.tocCard}>
+                    <Text style={styles.tocTitle}>{`${idx + 1}. ${h.title}`}</Text>
+                    <Text style={styles.tocPage}>Page {h.page}</Text>
+                    <Pressable
+                      onPress={() => handleOpenSource(currentFilePath || '', h.page)}
+                      style={styles.jumpButton}
+                    >
+                      <Text style={styles.jumpButtonText}>↗ Jump</Text>
+                    </Pressable>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+
+            <View style={styles.footer}>
+              <View style={styles.btnRow}>
+                <HighContrastButton
+                  label="📖 Build / Update ToC (Page 1)"
+                  onPress={handleGenerateTocPage}
+                  disabled={!isNoteFile || isScanningToc}
+                />
+                <HighContrastButton
+                  label="🔄 Refresh"
+                  onPress={handleRefreshToc}
+                  disabled={!isNoteFile || isScanningToc}
+                />
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Tab 3: Keyword Index View */}
+        {activeTab === 'index' && (
+          <View style={styles.tabViewContainer}>
+            <Text style={styles.subtitle}>
+              {isScanningIndex ? 'Scanning note keywords...' : `${filteredKeywords.length} unique keyword(s) found`}
+            </Text>
+
+            <SearchBar
+              value={indexSearchQuery}
+              onChangeText={setIndexSearchQuery}
+              onClear={() => setIndexSearchQuery('')}
+            />
+
+            <ScrollView style={{ flex: 1, marginVertical: 12 }}>
+              {filteredKeywords.length === 0 ? (
+                <Text style={{ textAlign: 'center', marginVertical: 32, fontSize: 16, color: '#666' }}>
+                  No keywords detected. Text and native keywords will appear here automatically.
+                </Text>
+              ) : (
+                filteredKeywords.map((kw, idx) => (
+                  <View key={idx} style={styles.indexCard}>
+                    <View style={styles.indexWordRow}>
+                      <Text style={styles.indexWord}>{kw.keyword}</Text>
+                      {kw.pages.length > 0 && (
+                        <Pressable
+                          onPress={() => handleOpenSource(currentFilePath || '', kw.pages[0])}
+                          style={styles.jumpButton}
+                        >
+                          <Text style={styles.jumpButtonText}>↗ Jump (p. {kw.pages[0]})</Text>
+                        </Pressable>
+                      )}
+                    </View>
+                    <Text style={styles.indexPages}>Occurrences on page(s): {kw.pages.join(', ')}</Text>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+
+            <View style={styles.footer}>
+              <View style={styles.btnRow}>
+                <HighContrastButton
+                  label="🏷️ Build / Update Index (Last Page)"
+                  onPress={handleGenerateIndexPage}
+                  disabled={!isNoteFile || isScanningIndex}
+                />
+                <HighContrastButton
+                  label="🔄 Refresh"
+                  onPress={handleRefreshIndex}
+                  disabled={!isNoteFile || isScanningIndex}
+                />
+              </View>
+            </View>
+          </View>
+        )}
 
         <Text style={styles.buildLabel}>{BUILD_LABEL}</Text>
       </View>
@@ -1753,5 +1992,91 @@ const styles = StyleSheet.create({
     color: '#666666',
     textAlign: 'right',
     marginTop: 6,
+  },
+  navTabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 2,
+    borderColor: '#000000',
+    backgroundColor: '#f5f5f5',
+    marginBottom: 8,
+  },
+  navTab: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRightWidth: 1,
+    borderColor: '#cccccc',
+  },
+  navTabActive: {
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 3,
+    borderBottomColor: '#000000',
+  },
+  navTabText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#666666',
+  },
+  navTabTextActive: {
+    color: '#000000',
+  },
+  tabViewContainer: {
+    flex: 1,
+    paddingVertical: 4,
+  },
+  tocCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#000000',
+    backgroundColor: '#ffffff',
+    marginBottom: 8,
+  },
+  tocTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000000',
+    flex: 1,
+  },
+  tocPage: {
+    fontSize: 14,
+    color: '#666666',
+    marginRight: 12,
+  },
+  jumpButton: {
+    borderWidth: 1,
+    borderColor: '#000000',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#f0f0f0',
+  },
+  jumpButtonText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  indexCard: {
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#000000',
+    backgroundColor: '#ffffff',
+    marginBottom: 8,
+  },
+  indexWordRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  indexWord: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  indexPages: {
+    fontSize: 14,
+    color: '#666666',
+    marginTop: 4,
   },
 });
