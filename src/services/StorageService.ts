@@ -21,6 +21,18 @@ export interface ClipItem {
   timestamp: number; // Timestamp of clip creation
 }
 
+// Persisted ToC snapshot. Heading shape mirrors IndexService.HeadingItem, kept structural here
+// to avoid a circular import between StorageService and IndexService.
+export interface TocHeading {
+  id: string;
+  title: string;
+  page: number;
+}
+export interface TocState {
+  headings: TocHeading[];
+  updatedAt: number; // epoch ms of the last successful ToC build
+}
+
 const STORAGE_KEY = 'sn_clipper_aggregated_clips';
 const AUTO_REMOVE_KEY = 'clipper_auto_remove_inserted';
 const INSERT_FONT_SIZE_KEY = 'clipper_insert_font_size';
@@ -55,12 +67,60 @@ export class StorageService {
       if (!notePath) return {};
       const data = await AsyncStorage.getItem(`clipper_heading_overrides_${notePath}`);
       if (data) {
-        return JSON.parse(data);
+        const parsed = JSON.parse(data) as Record<string, string>;
+        // Keep only current per-title id keys (e.g. "p1_y107_x272"). Legacy builds keyed
+        // overrides by page number ("2"), which no longer match a heading and must be dropped
+        // so stale edits don't shadow freshly recognized titles.
+        const cleaned: Record<string, string> = {};
+        let dropped = false;
+        for (const key of Object.keys(parsed)) {
+          if (/^p\d+_/.test(key)) {
+            cleaned[key] = parsed[key];
+          } else {
+            dropped = true;
+          }
+        }
+        if (dropped) {
+          await AsyncStorage.setItem(`clipper_heading_overrides_${notePath}`, JSON.stringify(cleaned));
+        }
+        return cleaned;
       }
     } catch (e) {
       console.error('Failed to load heading overrides:', e);
     }
     return {};
+  }
+
+  /**
+   * Persist a snapshot of the last-built Table of Contents for a note (its headings and the
+   * time it was generated), so the ToC tab can show state without re-scanning on open.
+   */
+  static async setTocState(notePath: string, state: TocState): Promise<void> {
+    try {
+      if (!notePath) return;
+      await AsyncStorage.setItem(`clipper_toc_state_${notePath}`, JSON.stringify(state));
+    } catch (e) {
+      console.error('Failed to save ToC state:', e);
+    }
+  }
+
+  /**
+   * Load the last-built Table of Contents snapshot for a note, or null if none exists.
+   */
+  static async getTocState(notePath: string): Promise<TocState | null> {
+    try {
+      if (!notePath) return null;
+      const data = await AsyncStorage.getItem(`clipper_toc_state_${notePath}`);
+      if (data) {
+        const parsed = JSON.parse(data) as TocState;
+        if (parsed && Array.isArray(parsed.headings) && typeof parsed.updatedAt === 'number') {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load ToC state:', e);
+    }
+    return null;
   }
 
   /**
@@ -300,17 +360,17 @@ export class StorageService {
   }
 
   /**
-   * Retrieve whether Table of Contents feature is enabled (default true).
+   * Retrieve whether Table of Contents feature is enabled (default false — opt-in).
    */
   static async getEnableToc(): Promise<boolean> {
     try {
       const value = await AsyncStorage.getItem(ENABLE_TOC_KEY);
-      if (value === null) return true;
+      if (value === null) return false;
       return value === 'true';
     } catch (e) {
       console.error('Failed to load enable-toc setting:', e);
     }
-    return true;
+    return false;
   }
 
   /**

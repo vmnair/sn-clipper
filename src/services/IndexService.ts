@@ -17,6 +17,8 @@ export interface KeywordOccurrence {
 export interface GenerateResult {
   success: boolean;
   message?: string;
+  needsBlankPage?: boolean; // page 1 has user content; caller should prompt to insert a blank page
+  headings?: HeadingItem[]; // headings used to build the ToC (so the caller can persist without re-scanning)
 }
 
 const COMMON_STOP_WORDS = new Set([
@@ -231,36 +233,66 @@ const isTightHeadingTextForTitle = (elem: any, titleItem: any): string => {
  * title's bounding box and runs them through Supernote's on-device recognition.
  * Returns '' when recognition is unavailable, no strokes match, or the result is unusable.
  */
+const NON_STROKE_TYPES = new Set([100, 200, 500, 501, 502, 600, 700, 800]);
+
+/**
+ * Best-effort bounding box for a page element, tolerating the various shapes the native
+ * layer may return (recognition corners, maxX/maxY corner, or an explicit rect).
+ */
+const getElemBBox = (elem: any): { left: number; top: number; right: number; bottom: number } | null => {
+  const rr = elem?.recognizeResult;
+  if (rr && typeof rr.up_left_point_x === 'number' && typeof rr.down_right_point_x === 'number'
+      && (rr.up_left_point_x || rr.down_right_point_x || rr.up_left_point_y || rr.down_right_point_y)) {
+    return { left: rr.up_left_point_x, top: rr.up_left_point_y, right: rr.down_right_point_x, bottom: rr.down_right_point_y };
+  }
+  const r = elem?.textBox?.textRect || elem?.textRect;
+  if (r && typeof r.left === 'number') {
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  }
+  if (typeof elem?.maxX === 'number' && typeof elem?.maxY === 'number' && (elem.maxX || elem.maxY)) {
+    return { left: elem.maxX, top: elem.maxY, right: elem.maxX, bottom: elem.maxY };
+  }
+  if (typeof elem?.X === 'number' && typeof elem?.Y === 'number') {
+    return { left: elem.X, top: elem.Y, right: elem.X, bottom: elem.Y };
+  }
+  return null;
+};
+
 const recognizeTitleStrokes = async (
   titleItem: any,
   pageElements: any[],
   pageSize: { width: number; height: number } | null,
 ): Promise<string> => {
   try {
-    if (!pageSize || !Array.isArray(pageElements) || pageElements.length === 0) return '';
+    if (!Array.isArray(pageElements) || pageElements.length === 0) return '';
     if (typeof titleItem?.X !== 'number' || typeof titleItem?.Y !== 'number') return '';
 
     const { PluginCommAPI } = require('sn-plugin-lib');
     if (!PluginCommAPI || typeof PluginCommAPI.recognizeElements !== 'function') return '';
 
-    // Expand the title rect generously: a stroke's maxX/maxY is a corner, not a center.
-    const pad = 50;
-    const left = titleItem.X - pad;
-    const right = titleItem.X + (titleItem.width || 100) + pad;
-    const top = titleItem.Y - pad;
-    const bottom = titleItem.Y + (titleItem.height || 60) + pad;
+    // Tight padding: the title box is precise, so keep it snug (especially vertically) to avoid
+    // pulling in body-text strokes from the lines below the title.
+    const padX = 40;
+    const padY = 18;
+    const left = titleItem.X - padX;
+    const right = titleItem.X + (titleItem.width || 100) + padX;
+    const top = titleItem.Y - padY;
+    const bottom = titleItem.Y + (titleItem.height || 60) + padY;
 
     const strokes = pageElements.filter((elem: any) => {
-      if (!elem || elem.type !== 0) return false; // Element.TYPE_STROKE === 0
-      const px = typeof elem.maxX === 'number' ? elem.maxX : (typeof elem.X === 'number' ? elem.X : null);
-      const py = typeof elem.maxY === 'number' ? elem.maxY : (typeof elem.Y === 'number' ? elem.Y : null);
-      if (px === null || py === null) return false;
-      return px >= left && px <= right && py >= top && py <= bottom;
+      if (!elem) return false;
+      if (NON_STROKE_TYPES.has(elem.type)) return false; // keep strokes (type 0) and unknowns
+      const box = getElemBBox(elem);
+      if (!box) return false;
+      // Any overlap between the element box and the (padded) title box.
+      return !(box.left > right || box.right < left || box.top > bottom || box.bottom < top);
     });
 
     if (strokes.length === 0) return '';
 
-    const recRes: any = await PluginCommAPI.recognizeElements(strokes, pageSize);
+    const size = pageSize || { width: 1404, height: 1872 };
+    const recRes: any = await PluginCommAPI.recognizeElements(strokes, size);
+
     const rawText: any = typeof recRes === 'string'
       ? recRes
       : (typeof recRes?.result === 'string' ? recRes.result : (recRes?.data || ''));
@@ -295,16 +327,28 @@ export class IndexService {
       const headings: HeadingItem[] = [];
       const rawTitles = Array.isArray(titlesRes) ? titlesRes : (titlesRes?.result || titlesRes?.data || []);
 
+      // Only treat page 0 as the excluded "ToC page" when it actually contains a ToC header.
+      // Before a ToC exists (or after the user deletes it), page 0 is normal content and its
+      // titles are real headings that must not be dropped.
+      let page0IsToc = false;
+      try {
+        const p0Res: any = await PluginFileAPI.getElements(0, notePath);
+        const p0Elems = Array.isArray(p0Res) ? p0Res : (p0Res?.result || p0Res?.data || []);
+        page0IsToc = Array.isArray(p0Elems) && p0Elems.some((e: any) => isTocElement(e));
+      } catch (e) {}
+
       const pageElementsMap = new Map<number, any[]>();
       const pageSizeMap = new Map<number, { width: number; height: number }>();
       const missingTextPages = new Set<number>();
+
+      // A title is on the excluded ToC page only when page 0 truly holds a ToC.
+      const isExcludedPage = (rawPg: number) => rawPg === 0 && page0IsToc;
 
       for (let i = 0; i < rawTitles.length; i++) {
         const item = rawTitles[i];
         if (item) {
           const rawPg = typeof item.page === 'number' ? item.page : (parseInt(item.page, 10) || 0);
-          // Exclude Page 0 (ToC page itself) titles
-          if (rawPg > 0) {
+          if (!isExcludedPage(rawPg)) {
             const headingText = extractTitleString(item);
             if (!headingText) {
               missingTextPages.add(rawPg);
@@ -340,8 +384,8 @@ export class IndexService {
 
         const rawPg = typeof item.page === 'number' ? item.page : (parseInt(item.page, 10) || 0);
 
-        // Skip titles found on Page 0 (the ToC page itself)
-        if (rawPg === 0) continue;
+        // Skip titles on page 0 only when page 0 is genuinely a generated ToC page.
+        if (isExcludedPage(rawPg)) continue;
 
         const pageDisplay = rawPg + 1;
         const ord = perPageOrdinal.get(rawPg) || 0;
@@ -502,10 +546,52 @@ export class IndexService {
   /**
    * Insert or update the Table of Contents on Page 1 with per-row try/catch error boundaries.
    */
-  static async generateTocPage(notePath: string, customFontSize?: number): Promise<GenerateResult> {
+  static async generateTocPage(
+    notePath: string,
+    customFontSize?: number,
+    opts?: { insertBlankFirst?: boolean },
+  ): Promise<GenerateResult> {
     if (!notePath) return { success: false, message: 'No active note open' };
     try {
       const { PluginFileAPI, PluginNoteAPI, PluginCommAPI } = require('sn-plugin-lib');
+
+      // If we're inserting a blank front page, do it FIRST so the subsequent scan reports the
+      // (shifted) page numbers correctly.
+      if (opts?.insertBlankFirst) {
+        try {
+          // insertNotePage rejects style names and android.resource:// URIs (code 802 "Background
+          // template file does not exist"). It needs a real file on disk, so render page 0's own
+          // background template to a PNG and pass that path.
+          const { PluginManager } = require('sn-plugin-lib');
+          const pluginDir = await PluginManager.getPluginDirPath().catch(() => null);
+          if (!pluginDir) {
+            return { success: false, message: 'Could not access plugin storage to create a blank page.' };
+          }
+          const tplPng = `${pluginDir}/toc_blank_tpl_${Date.now()}.png`;
+          await PluginFileAPI.generateNoteTemplatePng(notePath, 0, tplPng).catch(() => null);
+
+          await PluginFileAPI.insertNotePage({ notePath, page: 0, template: tplPng });
+
+          // Commit the new page before writing ToC elements — the SDK warns that element ops on
+          // the open file need saveCurrentNote() first to avoid writing to a stale page layout.
+          try { await PluginNoteAPI.saveCurrentNote(); await PluginCommAPI.reloadFile(); } catch (e) {}
+
+          const p0Res: any = await PluginFileAPI.getElements(0, notePath).catch(() => null);
+          const p0 = Array.isArray(p0Res) ? p0Res : (p0Res?.result || p0Res?.data || []);
+          const p0Count = Array.isArray(p0) ? p0.length : -1;
+
+          // Safety: only write the ToC if a blank page actually landed at index 0. Otherwise the
+          // insert has different semantics — abort rather than clobber the user's page-1 content.
+          if (p0Count > 0) {
+            return {
+              success: false,
+              message: 'Could not add a blank first page automatically. Please add a blank page at the front (Pages → + Add Page), then tap Update ToC.',
+            };
+          }
+        } catch (e: any) {
+          return { success: false, message: e?.message || 'Failed to insert a blank ToC page.' };
+        }
+      }
 
       const headings = await this.scanHeadings(notePath);
       if (headings.length === 0) {
@@ -521,7 +607,7 @@ export class IndexService {
       try {
         const elementsRes: any = await PluginFileAPI.getElements(0, notePath);
         const rawElements = Array.isArray(elementsRes) ? elementsRes : (elementsRes?.result || elementsRes?.data || []);
-        
+
         let hasTocHeader = false;
         for (const elem of rawElements) {
           if (isTocElement(elem)) {
@@ -530,20 +616,36 @@ export class IndexService {
           }
         }
 
-        // If Page 0 has non-ToC elements (user handwritten notes), prompt user to insert a blank page
-        if (rawElements.length > 0 && !hasTocHeader) {
+        // Page 0 has user content (not an existing ToC) and we weren't told to insert a blank
+        // page: signal the caller so it can prompt the user to auto-insert one.
+        if (rawElements.length > 0 && !hasTocHeader && !opts?.insertBlankFirst) {
           return {
             success: false,
-            message: 'Page 1 contains existing notes. Please insert a blank page at the beginning of your notebook (Pages -> + Add Page) before generating the Table of Contents.',
+            needsBlankPage: true,
+            message: 'Page 1 contains existing notes.',
           };
         }
       } catch (e) {}
 
-      // Clear old elements on Page 0 so old ToC lines are erased cleanly
+      // Clear old elements on Page 0 so a regenerated ToC doesn't stack on the previous one.
+      // The ToC is written with insertText (live note), so we must clear the page AND reload the
+      // live note from the cleared file before writing — otherwise the final saveCurrentNote
+      // re-persists the old ToC on top of the new one.
       try {
+        await PluginNoteAPI.saveCurrentNote();
         await PluginFileAPI.replaceElements(notePath, 0, []);
+        await PluginCommAPI.reloadFile();
+
+        // Fallback: if any elements survived the replace, delete them explicitly by page index.
+        const chkRes: any = await PluginFileAPI.getElements(0, notePath).catch(() => null);
+        const remaining = Array.isArray(chkRes) ? chkRes : (chkRes?.result || chkRes?.data || []);
+        if (Array.isArray(remaining) && remaining.length > 0) {
+          const nums = remaining.map((e: any, i: number) => (typeof e?.numInPage === 'number' ? e.numInPage : i));
+          await PluginFileAPI.deleteElements(notePath, 0, nums);
+          await PluginCommAPI.reloadFile();
+        }
       } catch (e) {
-        console.warn('replaceElements error on ToC page 0:', e);
+        console.warn('clear ToC page 0 error:', e);
       }
 
       const fontSize = customFontSize || (await StorageService.getInsertFontSize()) || 36;
@@ -627,7 +729,7 @@ export class IndexService {
         console.warn('save/reload error:', e);
       }
 
-      return { success: true, message: 'Table of Contents created successfully!' };
+      return { success: true, message: 'Table of Contents created successfully!', headings };
     } catch (e: any) {
       console.error('Failed to generate ToC page:', e);
       return { success: false, message: e?.message || 'Failed to generate ToC page' };

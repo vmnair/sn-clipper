@@ -15,6 +15,7 @@ import {
   FlatList,
   TextInput,
   Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { ClipService } from './services/ClipService';
 import { ClipItem, ClipSubElement, StorageService, DEFAULT_INSERT_FONT_SIZE } from './services/StorageService';
@@ -111,19 +112,27 @@ export default function App() {
   // gate the two display surfaces: the Clipper card jump icon, and the inserted-note link.
   const [showSourceInClipper, setShowSourceInClipper] = useState(true);
   const [insertSourceLink, setInsertSourceLink] = useState(true);
-  const [enableToc, setEnableToc] = useState(true);
-  const [enableKeywordIndex, setEnableKeywordIndex] = useState(true);
+  const [enableToc, setEnableToc] = useState(false);
+  const [enableKeywordIndex, setEnableKeywordIndex] = useState(false);
 
   // Tab State: 'clips' | 'toc' | 'index'
   const [activeTab, setActiveTab] = useState<'clips' | 'toc' | 'index'>('clips');
   const [headings, setHeadings] = useState<HeadingItem[]>([]);
   const [keywords, setKeywords] = useState<KeywordOccurrence[]>([]);
-  const [isScanningToc, setIsScanningToc] = useState(false);
+  const [isGeneratingToc, setIsGeneratingToc] = useState(false);
+  const [tocUpdatedAt, setTocUpdatedAt] = useState<number | null>(null);
   const [isScanningIndex, setIsScanningIndex] = useState(false);
   const [indexSearchQuery, setIndexSearchQuery] = useState('');
 
   const [editingHeading, setEditingHeading] = useState<HeadingItem | null>(null);
   const [editTitleInput, setEditTitleInput] = useState<string>('');
+
+  // If the active tab gets disabled in Settings, fall back to the Clips tab so its content
+  // doesn't linger on screen after the feature is turned off.
+  useEffect(() => {
+    if (activeTab === 'toc' && !enableToc) setActiveTab('clips');
+    if (activeTab === 'index' && !enableKeywordIndex) setActiveTab('clips');
+  }, [enableToc, enableKeywordIndex, activeTab]);
 
   const handleOpenEditHeadingModal = (h: HeadingItem) => {
     setEditingHeading(h);
@@ -133,14 +142,23 @@ export default function App() {
   const handleSaveHeadingTitle = async () => {
     if (!editingHeading || !currentFilePath) return;
     try {
-      const newTitle = editTitleInput.trim() || `Heading ${editingHeading.page}`;
+      const trimmed = editTitleInput.trim();
       const overrides = await StorageService.getHeadingOverrides(currentFilePath);
-      overrides[editingHeading.id] = newTitle;
-      await StorageService.saveHeadingOverrides(currentFilePath, overrides);
-
-      setHeadings(prev => prev.map(h => h.id === editingHeading.id ? { ...h, title: newTitle } : h));
-      setEditingHeading(null);
-      ToastAndroid.show('Heading title updated!', ToastAndroid.SHORT);
+      if (trimmed) {
+        overrides[editingHeading.id] = trimmed;
+        await StorageService.saveHeadingOverrides(currentFilePath, overrides);
+        setHeadings(prev => prev.map(h => h.id === editingHeading.id ? { ...h, title: trimmed } : h));
+        setEditingHeading(null);
+        ToastAndroid.show('Heading title updated!', ToastAndroid.SHORT);
+      } else {
+        // Clearing the field removes the override and reverts to the detected/recognized title.
+        delete overrides[editingHeading.id];
+        await StorageService.saveHeadingOverrides(currentFilePath, overrides);
+        setEditingHeading(null);
+        const items = await IndexService.scanHeadings(currentFilePath);
+        setHeadings(items);
+        ToastAndroid.show('Reverted to detected title.', ToastAndroid.SHORT);
+      }
     } catch (e) {
       ToastAndroid.show('Failed to save title', ToastAndroid.SHORT);
     }
@@ -163,6 +181,8 @@ export default function App() {
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [confirmTitle, setConfirmTitle] = useState('');
   const [confirmDescription, setConfirmDescription] = useState('');
+  const [confirmConfirmLabel, setConfirmConfirmLabel] = useState('Confirm');
+  const [confirmCancelLabel, setConfirmCancelLabel] = useState('Cancel');
   const [onConfirmCallback, setOnConfirmCallback] = useState<{ fn: () => void } | null>(null);
 
   // A plugin button press (e.g. the reader's selection-popup "Clip" entry) fires
@@ -194,7 +214,8 @@ export default function App() {
     StorageService.getShowSourceInClipper().then(setShowSourceInClipper);
     StorageService.getInsertSourceLink().then(setInsertSourceLink);
     StorageService.getEnableToc().then(setEnableToc);
-    StorageService.getEnableKeywordIndex().then(setEnableKeywordIndex);
+    // Keyword Index is on hold: keep it disabled regardless of any previously persisted value so
+    // the Index tab stays hidden (its Settings toggle has been removed).
 
     // Check active file context (Note vs Document)
     const runContextCheck = async () => {
@@ -257,6 +278,15 @@ export default function App() {
           const filePath = fileRes.result;
           setCurrentFilePath(filePath);
           setIsNoteFile(!isDocFile(filePath));
+
+          // Restore the last-built ToC snapshot so the ToC tab shows its state (count + last
+          // updated time) without re-scanning the note on open.
+          StorageService.getTocState(filePath).then(state => {
+            if (state) {
+              setHeadings(state.headings);
+              setTocUpdatedAt(state.updatedAt);
+            }
+          });
 
           let pageNum = 0;
           const pageRes = await PluginCommAPI.getCurrentPageNum();
@@ -558,6 +588,8 @@ export default function App() {
         setConfirmDescription(
           `The original document "${element.articleName || clip.articleName}" has been deleted. Would you like to remove the source link from this clipping? (The highlight text will be kept).`
         );
+        setConfirmConfirmLabel('Remove Link');
+        setConfirmCancelLabel('Keep Link');
         setOnConfirmCallback({
           fn: async () => {
             await ClipService.removeLinkFromElement(clip.id, elementIndex);
@@ -1429,37 +1461,42 @@ export default function App() {
   };
 
   // Handlers for Table of Contents & Keyword Index
-  const handleRefreshToc = async () => {
-    if (!currentFilePath) {
-      ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
-      return;
-    }
-    setIsScanningToc(true);
-    try {
-      const items = await IndexService.scanHeadings(currentFilePath);
-      setHeadings(items);
-      if (items.length === 0) {
-        ToastAndroid.show('No headings found in this note', ToastAndroid.SHORT);
-      }
-    } catch (e: any) {
-      ToastAndroid.show('Failed to scan headings', ToastAndroid.SHORT);
-    } finally {
-      setIsScanningToc(false);
-    }
-  };
 
-  const handleGenerateTocPage = async () => {
+  // Scan the note and write/refresh the ToC page. `insertBlankFirst` prepends a blank page first
+  // (used after the user confirms, when page 1 already has content).
+  const runTocBuild = async (insertBlankFirst: boolean) => {
     if (!currentFilePath) {
       ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
       return;
     }
-    setIsScanningToc(true);
+    setIsGeneratingToc(true);
     try {
-      const res = await IndexService.generateTocPage(currentFilePath, insertFontSize);
-      const items = await IndexService.scanHeadings(currentFilePath);
-      setHeadings(items);
+      const res = await IndexService.generateTocPage(currentFilePath, insertFontSize, { insertBlankFirst });
+
+      // Page 1 has user content — ask before inserting a blank front page.
+      if (res.needsBlankPage) {
+        setIsGeneratingToc(false);
+        setConfirmTitle('Page 1 has content');
+        setConfirmDescription('Page 1 of this note already contains writing. Insert a blank page at the front for the Table of Contents?');
+        setConfirmConfirmLabel('Insert Blank Page');
+        setConfirmCancelLabel('Cancel');
+        setOnConfirmCallback({
+          fn: async () => {
+            setShowConfirmDialog(false);
+            await runTocBuild(true);
+          },
+        });
+        setShowConfirmDialog(true);
+        return;
+      }
+
       if (res.success) {
-        ToastAndroid.show(res.message || 'Table of Contents generated at Page 1!', ToastAndroid.LONG);
+        const items = res.headings || [];
+        const updatedAt = Date.now();
+        await StorageService.setTocState(currentFilePath, { headings: items, updatedAt });
+        setHeadings(items);
+        setTocUpdatedAt(updatedAt);
+        ToastAndroid.show(res.message || 'Table of Contents created!', ToastAndroid.LONG);
         PluginManager.closePluginView();
       } else {
         ToastAndroid.show(res.message || 'Failed to generate ToC page', ToastAndroid.LONG);
@@ -1467,9 +1504,11 @@ export default function App() {
     } catch (e: any) {
       ToastAndroid.show('Failed to generate ToC page', ToastAndroid.LONG);
     } finally {
-      setIsScanningToc(false);
+      setIsGeneratingToc(false);
     }
   };
+
+  const handleBuildToc = () => { runTocBuild(false); };
 
   const handleRefreshIndex = async () => {
     if (!currentFilePath) {
@@ -1623,10 +1662,7 @@ export default function App() {
             </Pressable>
             {enableToc && (
               <Pressable
-                onPress={() => {
-                  setActiveTab('toc');
-                  if (headings.length === 0) handleRefreshToc();
-                }}
+                onPress={() => setActiveTab('toc')}
                 style={[styles.navTab, activeTab === 'toc' && styles.navTabActive]}
               >
                 <Text style={[styles.navTabText, activeTab === 'toc' && styles.navTabTextActive]}>
@@ -1744,16 +1780,20 @@ export default function App() {
         )}
 
         {/* Tab 2: Table of Contents View */}
-        {activeTab === 'toc' && (
+        {enableToc && activeTab === 'toc' && (
           <View style={styles.tabViewContainer}>
             <Text style={styles.subtitle}>
-              {isScanningToc ? 'Scanning note headings...' : `${headings.length} heading(s) found in open note`}
+              {tocUpdatedAt
+                ? `${headings.length} heading(s) found in current note. Last updated ${new Date(tocUpdatedAt).toLocaleString()}.`
+                : 'Tap "Build ToC" to scan this note and generate a Table of Contents.'}
             </Text>
 
             <ScrollView style={{ flex: 1, marginVertical: 12 }}>
               {headings.length === 0 ? (
                 <Text style={{ textAlign: 'center', marginVertical: 32, fontSize: 16, color: '#666' }}>
-                  No headings detected. Add titles/headings in your note to generate a Table of Contents.
+                  {tocUpdatedAt
+                    ? 'No headings detected. Add titles/headings in your note, then tap Update ToC.'
+                    : 'No Table of Contents yet. Tap "Build ToC" below to scan this note for titles/headings.'}
                 </Text>
               ) : (
                 headings.map((h, idx) => (
@@ -1767,12 +1807,6 @@ export default function App() {
                       >
                         <Text style={styles.editButtonText}>✏️ Edit</Text>
                       </Pressable>
-                      <Pressable
-                        onPress={() => handleJumpToNotePage(h.page)}
-                        style={styles.jumpButton}
-                      >
-                        <Text style={styles.jumpButtonText}>↗ Jump</Text>
-                      </Pressable>
                     </View>
                   </View>
                 ))
@@ -1782,14 +1816,9 @@ export default function App() {
             <View style={styles.footer}>
               <View style={styles.btnRow}>
                 <HighContrastButton
-                  label="📖 Build / Update ToC (Page 1)"
-                  onPress={handleGenerateTocPage}
-                  disabled={!isNoteFile || isScanningToc}
-                />
-                <HighContrastButton
-                  label="🔄 Refresh"
-                  onPress={handleRefreshToc}
-                  disabled={!isNoteFile || isScanningToc}
+                  label={tocUpdatedAt ? '🔄 Update ToC (Page 1)' : '📖 Build ToC (Page 1)'}
+                  onPress={handleBuildToc}
+                  disabled={!isNoteFile || isGeneratingToc}
                 />
               </View>
             </View>
@@ -1797,7 +1826,7 @@ export default function App() {
         )}
 
         {/* Tab 3: Keyword Index View */}
-        {activeTab === 'index' && (
+        {enableKeywordIndex && activeTab === 'index' && (
           <View style={styles.tabViewContainer}>
             <Text style={styles.subtitle}>
               {isScanningIndex ? 'Scanning note keywords...' : `${filteredKeywords.length} unique keyword(s) found`}
@@ -1905,11 +1934,6 @@ export default function App() {
             setEnableToc(value);
             StorageService.setEnableToc(value);
           }}
-          enableKeywordIndex={enableKeywordIndex}
-          onEnableKeywordIndexChange={(value) => {
-            setEnableKeywordIndex(value);
-            StorageService.setEnableKeywordIndex(value);
-          }}
           onResetToDefault={() => {
             // Restore every setting to its application default.
             setAutoRemoveInserted(true); StorageService.setAutoRemoveInserted(true);
@@ -1917,20 +1941,19 @@ export default function App() {
             setInsertFontSize(DEFAULT_INSERT_FONT_SIZE); StorageService.setInsertFontSize(DEFAULT_INSERT_FONT_SIZE);
             setShowSourceInClipper(true); StorageService.setShowSourceInClipper(true);
             setInsertSourceLink(true); StorageService.setInsertSourceLink(true);
-            setEnableToc(true); StorageService.setEnableToc(true);
-            setEnableKeywordIndex(true); StorageService.setEnableKeywordIndex(true);
+            setEnableToc(false); StorageService.setEnableToc(false);
             ToastAndroid.show('Settings reset to default.', ToastAndroid.SHORT);
           }}
           onClose={() => setIsSettingsOpen(false)}
         />
       )}
-      {/* Confirmation Dialog for Broken Links */}
+      {/* Shared confirmation dialog (broken links, ToC blank-page prompt, …) */}
       <ConfirmationDialog
         visible={showConfirmDialog}
         title={confirmTitle}
         description={confirmDescription}
-        confirmLabel="Remove Link"
-        cancelLabel="Keep Link"
+        confirmLabel={confirmConfirmLabel}
+        cancelLabel={confirmCancelLabel}
         onConfirm={() => {
           onConfirmCallback?.fn();
         }}
@@ -1941,7 +1964,8 @@ export default function App() {
       {editingHeading && (
         <Modal
           transparent
-          animationType="fade"
+          animationType="none"
+          statusBarTranslucent
           visible={!!editingHeading}
           onRequestClose={() => setEditingHeading(null)}
         >
@@ -1955,21 +1979,47 @@ export default function App() {
                 placeholder="Enter title name..."
                 placeholderTextColor="#666666"
                 autoFocus
+                selectTextOnFocus
               />
               <View style={styles.modalBtnRow}>
                 <Pressable
-                  style={[styles.modalBtn, styles.modalBtnCancel]}
-                  onPress={() => setEditingHeading(null)}
+                  style={[styles.modalBtn, styles.modalBtnClear]}
+                  onPress={() => setEditTitleInput('')}
                 >
-                  <Text style={styles.modalBtnCancelText}>Cancel</Text>
+                  <Text style={styles.modalBtnCancelText}>🗑 Clear</Text>
                 </Pressable>
-                <Pressable
-                  style={[styles.modalBtn, styles.modalBtnSave]}
-                  onPress={handleSaveHeadingTitle}
-                >
-                  <Text style={styles.modalBtnSaveText}>Save</Text>
-                </Pressable>
+                <View style={{ flexDirection: 'row', gap: 12 }}>
+                  <Pressable
+                    style={[styles.modalBtn, styles.modalBtnCancel]}
+                    onPress={() => setEditingHeading(null)}
+                  >
+                    <Text style={styles.modalBtnCancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.modalBtn, styles.modalBtnSave]}
+                    onPress={handleSaveHeadingTitle}
+                  >
+                    <Text style={styles.modalBtnSaveText}>Save</Text>
+                  </Pressable>
+                </View>
               </View>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* Progress dialog shown while the ToC is being scanned + written */}
+      {isGeneratingToc && (
+        <Modal transparent animationType="none" statusBarTranslucent visible={isGeneratingToc}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <ActivityIndicator size="large" color="#000000" style={{ marginBottom: 12 }} />
+              <Text style={[styles.modalTitle, { marginBottom: 0, textAlign: 'center' }]}>
+                Generating ToC…
+              </Text>
+              <Text style={{ textAlign: 'center', color: '#666', marginTop: 6 }}>
+                Scanning headings — this can take a moment.
+              </Text>
             </View>
           </View>
         </Modal>
@@ -2205,8 +2255,11 @@ const styles = StyleSheet.create({
   },
   modalBtnRow: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 12,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  modalBtnClear: {
+    backgroundColor: '#f5f5f5',
   },
   modalBtn: {
     paddingHorizontal: 16,

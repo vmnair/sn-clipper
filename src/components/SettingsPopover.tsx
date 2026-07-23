@@ -21,8 +21,6 @@ interface SettingsPopoverProps {
   onInsertFontSizeChange: (size: number) => void;
   enableToc: boolean;
   onEnableTocChange: (value: boolean) => void;
-  enableKeywordIndex: boolean;
-  onEnableKeywordIndexChange: (value: boolean) => void;
   onResetToDefault: () => void;
   onClose: () => void;
 }
@@ -57,8 +55,6 @@ export function SettingsPopover({
   onInsertFontSizeChange,
   enableToc,
   onEnableTocChange,
-  enableKeywordIndex,
-  onEnableKeywordIndexChange,
   onResetToDefault,
   onClose,
 }: SettingsPopoverProps) {
@@ -96,7 +92,7 @@ export function SettingsPopover({
 
         <View style={styles.popoverDivider} />
 
-        <Text style={styles.popoverSectionHeader}>Table of Contents &amp; Index</Text>
+        <Text style={styles.popoverSectionHeader}>Table of Contents</Text>
         <Pressable
           onPress={() => onEnableTocChange(!enableToc)}
           style={styles.popoverRow}
@@ -107,18 +103,6 @@ export function SettingsPopover({
             <Text style={styles.popoverRowHint}>ToC tab &amp; Page 1 note generator</Text>
           </View>
           <Badge selected={enableToc} />
-        </Pressable>
-
-        <Pressable
-          onPress={() => onEnableKeywordIndexChange(!enableKeywordIndex)}
-          style={styles.popoverRow}
-          testID="setting-enable-keyword-index"
-        >
-          <View style={styles.popoverLabelBlock}>
-            <Text style={styles.popoverRowLabel}>Enable Keyword Index</Text>
-            <Text style={styles.popoverRowHint}>Index tab &amp; Last Page note generator</Text>
-          </View>
-          <Badge selected={enableKeywordIndex} />
         </Pressable>
 
         <View style={styles.popoverDivider} />
