@@ -105,6 +105,19 @@ export class StorageService {
   }
 
   /**
+   * Remove the persisted ToC snapshot for a note (called after the ToC has been written into the
+   * note itself, so the Clipper ToC tab doesn't keep echoing a stale copy).
+   */
+  static async clearTocState(notePath: string): Promise<void> {
+    try {
+      if (!notePath) return;
+      await AsyncStorage.removeItem(`clipper_toc_state_${notePath}`);
+    } catch (e) {
+      console.error('Failed to clear ToC state:', e);
+    }
+  }
+
+  /**
    * Load the last-built Table of Contents snapshot for a note, or null if none exists.
    */
   static async getTocState(notePath: string): Promise<TocState | null> {

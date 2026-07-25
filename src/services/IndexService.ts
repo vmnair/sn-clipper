@@ -549,187 +549,130 @@ export class IndexService {
   static async generateTocPage(
     notePath: string,
     customFontSize?: number,
-    opts?: { insertBlankFirst?: boolean },
   ): Promise<GenerateResult> {
     if (!notePath) return { success: false, message: 'No active note open' };
     try {
-      const { PluginFileAPI, PluginNoteAPI, PluginCommAPI } = require('sn-plugin-lib');
+      const { PluginFileAPI, PluginNoteAPI, PluginCommAPI, PluginManager } = require('sn-plugin-lib');
 
-      // If we're inserting a blank front page, do it FIRST so the subsequent scan reports the
-      // (shifted) page numbers correctly.
-      if (opts?.insertBlankFirst) {
-        try {
-          // insertNotePage rejects style names and android.resource:// URIs (code 802 "Background
-          // template file does not exist"). It needs a real file on disk, so render page 0's own
-          // background template to a PNG and pass that path.
-          const { PluginManager } = require('sn-plugin-lib');
-          const pluginDir = await PluginManager.getPluginDirPath().catch(() => null);
-          if (!pluginDir) {
-            return { success: false, message: 'Could not access plugin storage to create a blank page.' };
-          }
-          const tplPng = `${pluginDir}/toc_blank_tpl_${Date.now()}.png`;
-          await PluginFileAPI.generateNoteTemplatePng(notePath, 0, tplPng).catch(() => null);
+      const readPage = async (p: number): Promise<any[]> => {
+        const r: any = await PluginFileAPI.getElements(p, notePath).catch(() => null);
+        return Array.isArray(r) ? r : (r?.result || r?.data || []);
+      };
+      const readCurrentPage = async (): Promise<number> => {
+        const r: any = await PluginCommAPI.getCurrentPageNum().catch(() => null);
+        return typeof r?.result === 'number' ? r.result : (typeof r === 'number' ? r : -1);
+      };
 
-          await PluginFileAPI.insertNotePage({ notePath, page: 0, template: tplPng });
-
-          // Commit the new page before writing ToC elements — the SDK warns that element ops on
-          // the open file need saveCurrentNote() first to avoid writing to a stale page layout.
-          try { await PluginNoteAPI.saveCurrentNote(); await PluginCommAPI.reloadFile(); } catch (e) {}
-
-          const p0Res: any = await PluginFileAPI.getElements(0, notePath).catch(() => null);
-          const p0 = Array.isArray(p0Res) ? p0Res : (p0Res?.result || p0Res?.data || []);
-          const p0Count = Array.isArray(p0) ? p0.length : -1;
-
-          // Safety: only write the ToC if a blank page actually landed at index 0. Otherwise the
-          // insert has different semantics — abort rather than clobber the user's page-1 content.
-          if (p0Count > 0) {
-            return {
-              success: false,
-              message: 'Could not add a blank first page automatically. Please add a blank page at the front (Pages → + Add Page), then tap Update ToC.',
-            };
-          }
-        } catch (e: any) {
-          return { success: false, message: e?.message || 'Failed to insert a blank ToC page.' };
-        }
-      }
-
-      const headings = await this.scanHeadings(notePath);
+      let headings = await this.scanHeadings(notePath);
       if (headings.length === 0) {
         return { success: false, message: 'No titles or headings found in this note.' };
       }
 
+      // The ToC is written with insertText, which writes to the CURRENT page. So the ToC lands
+      // wherever the reader is. Classify that page: blank → write there; existing ToC → refresh
+      // in place; real content → insert a fresh blank page here (pushing content down) so we
+      // never overwrite. A hard guard below refuses to write unless the target page is empty.
+      const startPage = await readCurrentPage();
+      if (startPage < 0) {
+        return { success: false, message: 'Could not read the current page. Open the note to a blank page where the ToC should go, then tap Build.' };
+      }
+      const startElems = await readPage(startPage);
+      const startHasToc = startElems.some((e: any) => isTocElement(e));
+      const startHasContent = startElems.length > 0 && !startHasToc;
+
+      let insertedBlank = false;
+      if (startHasContent) {
+        const pluginDir = await PluginManager.getPluginDirPath().catch(() => null);
+        if (!pluginDir) return { success: false, message: 'Could not access plugin storage to create a blank page.' };
+        const tplPng = `${pluginDir}/toc_tpl_${Date.now()}.png`;
+        await PluginFileAPI.generateNoteTemplatePng(notePath, startPage, tplPng).catch(() => null);
+        await PluginFileAPI.insertNotePage({ notePath, page: startPage, template: tplPng });
+        try { await PluginNoteAPI.saveCurrentNote(); await PluginCommAPI.reloadFile(); } catch (e) {}
+        insertedBlank = true;
+      } else if (startHasToc) {
+        // Refresh in place: clear the existing ToC on this page.
+        try {
+          await PluginNoteAPI.saveCurrentNote();
+          await PluginFileAPI.replaceElements(notePath, startPage, []);
+          await PluginCommAPI.reloadFile();
+          const rem = await readPage(startPage);
+          if (rem.length > 0) {
+            await PluginFileAPI.deleteElements(notePath, startPage, rem.map((e: any, i: number) => (typeof e?.numInPage === 'number' ? e.numInPage : i)));
+            await PluginCommAPI.reloadFile();
+          }
+        } catch (e) { console.warn('clear ToC error:', e); }
+      }
+
+      // HARD GUARD: insertText writes to whatever page is CURRENT right now. Only write if that
+      // page is empty — otherwise abort (and roll back a blank we added) so notes are never
+      // overwritten.
+      const target = await readCurrentPage();
+      const targetElems = target >= 0 ? await readPage(target) : [1];
+      if (target < 0 || targetElems.length > 0) {
+        if (insertedBlank && startPage >= 0) {
+          try { await PluginFileAPI.removeNotePage(notePath, startPage); await PluginNoteAPI.saveCurrentNote(); await PluginCommAPI.reloadFile(); } catch (e) {}
+        }
+        return {
+          success: false,
+          message: 'The target page is not empty, so nothing was written (your notes are untouched). Navigate to a blank page and tap Build there.',
+        };
+      }
+
+      // Re-scan so page references reflect any inserted page.
+      headings = await this.scanHeadings(notePath);
       const totalPagesRes: any = await PluginFileAPI.getNoteTotalPageNum(notePath);
       const totalPages = typeof totalPagesRes === 'number'
         ? totalPagesRes
         : (typeof totalPagesRes?.result === 'number' ? totalPagesRes.result : (totalPagesRes?.data || 1));
 
-      // Check Page 0 elements safely
-      try {
-        const elementsRes: any = await PluginFileAPI.getElements(0, notePath);
-        const rawElements = Array.isArray(elementsRes) ? elementsRes : (elementsRes?.result || elementsRes?.data || []);
-
-        let hasTocHeader = false;
-        for (const elem of rawElements) {
-          if (isTocElement(elem)) {
-            hasTocHeader = true;
-            break;
-          }
-        }
-
-        // Page 0 has user content (not an existing ToC) and we weren't told to insert a blank
-        // page: signal the caller so it can prompt the user to auto-insert one.
-        if (rawElements.length > 0 && !hasTocHeader && !opts?.insertBlankFirst) {
-          return {
-            success: false,
-            needsBlankPage: true,
-            message: 'Page 1 contains existing notes.',
-          };
-        }
-      } catch (e) {}
-
-      // Clear old elements on Page 0 so a regenerated ToC doesn't stack on the previous one.
-      // The ToC is written with insertText (live note), so we must clear the page AND reload the
-      // live note from the cleared file before writing — otherwise the final saveCurrentNote
-      // re-persists the old ToC on top of the new one.
-      try {
-        await PluginNoteAPI.saveCurrentNote();
-        await PluginFileAPI.replaceElements(notePath, 0, []);
-        await PluginCommAPI.reloadFile();
-
-        // Fallback: if any elements survived the replace, delete them explicitly by page index.
-        const chkRes: any = await PluginFileAPI.getElements(0, notePath).catch(() => null);
-        const remaining = Array.isArray(chkRes) ? chkRes : (chkRes?.result || chkRes?.data || []);
-        if (Array.isArray(remaining) && remaining.length > 0) {
-          const nums = remaining.map((e: any, i: number) => (typeof e?.numInPage === 'number' ? e.numInPage : i));
-          await PluginFileAPI.deleteElements(notePath, 0, nums);
-          await PluginCommAPI.reloadFile();
-        }
-      } catch (e) {
-        console.warn('clear ToC page 0 error:', e);
-      }
-
       const fontSize = customFontSize || (await StorageService.getInsertFontSize()) || 36;
       const rowSpacing = Math.round(fontSize * 1.5);
-      const availableVerticalSpace = 1440;
-      const headingsPerPage = Math.max(10, Math.floor(availableVerticalSpace / rowSpacing));
-
-      const pageHeaderTitle = 'TABLE OF CONTENTS';
+      const headingsPerPage = Math.max(10, Math.floor(1440 / rowSpacing));
       const headerTopY = 160;
       const headerFontSize = fontSize + 6;
-
-      // Write Title Header
-      try {
-        await PluginNoteAPI.insertText({
-          textContentFull: pageHeaderTitle,
-          textRect: { left: 200, top: headerTopY, right: 1160, bottom: headerTopY + 70 },
-          fontSize: headerFontSize,
-          textAlign: 0,
-          textBold: 1,
-          textItalics: 0,
-          textFrameWidthType: 0,
-          textFrameStyle: 0,
-          textEditable: 1,
-        });
-      } catch (e) {
-        console.warn('insertText header error:', e);
-      }
-
-      // Write Heading Rows with per-row isolated error boundaries
       const firstHeadingY = 260;
       const linkFontSize = Math.round(fontSize * 0.85);
-      const displayChunk = headings.slice(0, headingsPerPage);
 
+      // Write Title Header (to the verified-empty current page).
+      try {
+        await PluginNoteAPI.insertText({
+          textContentFull: 'TABLE OF CONTENTS',
+          textRect: { left: 200, top: headerTopY, right: 1160, bottom: headerTopY + 70 },
+          fontSize: headerFontSize, textAlign: 0, textBold: 1, textItalics: 0,
+          textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
+        });
+      } catch (e) { console.warn('insertText header error:', e); }
+
+      const displayChunk = headings.slice(0, headingsPerPage);
       for (let idx = 0; idx < displayChunk.length; idx++) {
         const h = displayChunk[idx];
         const itemY = firstHeadingY + (idx * rowSpacing);
-
-        const num = `${idx + 1}. `;
-        const lineText = `${num}${h.title} ........ p. ${h.page}`;
-
-        // Text Box for Row idx
+        const lineText = `${idx + 1}. ${h.title} ........ p. ${h.page}`;
         try {
           await PluginNoteAPI.insertText({
             textContentFull: lineText,
             textRect: { left: 200, top: itemY, right: 1160, bottom: itemY + Math.round(fontSize * 1.3) },
-            fontSize,
-            textAlign: 0,
-            textBold: 0,
-            textItalics: 0,
-            textFrameWidthType: 0,
-            textFrameStyle: 0,
-            textEditable: 1,
+            fontSize, textAlign: 0, textBold: 0, textItalics: 0,
+            textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
           });
-        } catch (e) {
-          console.warn(`insertText row ${idx} error:`, e);
-        }
+        } catch (e) { console.warn(`insertText row ${idx} error:`, e); }
 
-        // Link Icon (↗) for Row idx with SAFE BOUNDS
         const safeDestPage = Math.min(totalPages - 1, Math.max(0, h.page - 1));
         try {
           await PluginNoteAPI.insertTextLink({
-            destPath: notePath,
-            destPage: safeDestPage,
-            style: 0,
-            linkType: 0,
+            destPath: notePath, destPage: safeDestPage, style: 0, linkType: 0,
             rect: { left: 1180, top: itemY, right: 1260, bottom: itemY + Math.round(linkFontSize * 1.2) },
-            fontSize: linkFontSize,
-            fullText: '↗',
-            showText: '↗',
-            isItalic: 0,
+            fontSize: linkFontSize, fullText: '↗', showText: '↗', isItalic: 0,
           });
-        } catch (e) {
-          console.warn(`insertTextLink row ${idx} error:`, e);
-        }
+        } catch (e) { console.warn(`insertTextLink row ${idx} error:`, e); }
       }
 
       try {
         await PluginNoteAPI.saveCurrentNote();
         await PluginCommAPI.reloadFile();
-      } catch (e) {
-        console.warn('save/reload error:', e);
-      }
+      } catch (e) { console.warn('save/reload error:', e); }
 
-      return { success: true, message: 'Table of Contents created successfully!', headings };
+      return { success: true, message: `Table of Contents created on page ${target + 1}.`, headings };
     } catch (e: any) {
       console.error('Failed to generate ToC page:', e);
       return { success: false, message: e?.message || 'Failed to generate ToC page' };

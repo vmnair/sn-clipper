@@ -1462,40 +1462,24 @@ export default function App() {
 
   // Handlers for Table of Contents & Keyword Index
 
-  // Scan the note and write/refresh the ToC page. `insertBlankFirst` prepends a blank page first
-  // (used after the user confirms, when page 1 already has content).
-  const runTocBuild = async (insertBlankFirst: boolean) => {
+  // Build/refresh the ToC on the page the reader is currently on. generateTocPage guards against
+  // overwriting: it writes only to a verified-empty current page (inserting a blank first if the
+  // current page has content), so nothing is ever written over existing notes.
+  const runTocBuild = async () => {
     if (!currentFilePath) {
       ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
       return;
     }
     setIsGeneratingToc(true);
     try {
-      const res = await IndexService.generateTocPage(currentFilePath, insertFontSize, { insertBlankFirst });
-
-      // Page 1 has user content — ask before inserting a blank front page.
-      if (res.needsBlankPage) {
-        setIsGeneratingToc(false);
-        setConfirmTitle('Page 1 has content');
-        setConfirmDescription('Page 1 of this note already contains writing. Insert a blank page at the front for the Table of Contents?');
-        setConfirmConfirmLabel('Insert Blank Page');
-        setConfirmCancelLabel('Cancel');
-        setOnConfirmCallback({
-          fn: async () => {
-            setShowConfirmDialog(false);
-            await runTocBuild(true);
-          },
-        });
-        setShowConfirmDialog(true);
-        return;
-      }
+      const res = await IndexService.generateTocPage(currentFilePath, insertFontSize);
 
       if (res.success) {
-        const items = res.headings || [];
-        const updatedAt = Date.now();
-        await StorageService.setTocState(currentFilePath, { headings: items, updatedAt });
-        setHeadings(items);
-        setTocUpdatedAt(updatedAt);
+        // The ToC now lives in the note — clear the Clipper snapshot so the ToC tab doesn't keep
+        // showing a stale headings list next time Clipper opens.
+        await StorageService.clearTocState(currentFilePath);
+        setHeadings([]);
+        setTocUpdatedAt(null);
         ToastAndroid.show(res.message || 'Table of Contents created!', ToastAndroid.LONG);
         PluginManager.closePluginView();
       } else {
@@ -1508,7 +1492,7 @@ export default function App() {
     }
   };
 
-  const handleBuildToc = () => { runTocBuild(false); };
+  const handleBuildToc = () => { runTocBuild(); };
 
   const handleRefreshIndex = async () => {
     if (!currentFilePath) {
@@ -1784,8 +1768,8 @@ export default function App() {
           <View style={styles.tabViewContainer}>
             <Text style={styles.subtitle}>
               {tocUpdatedAt
-                ? `${headings.length} heading(s) found in current note. Last updated ${new Date(tocUpdatedAt).toLocaleString()}.`
-                : 'Tap "Build ToC" to scan this note and generate a Table of Contents.'}
+                ? `${headings.length} heading(s) found. The ToC is created on the page you're viewing — open a blank page first (it won't overwrite notes).`
+                : 'Open the note to a blank page where you want the ToC, then tap "Build ToC". It writes on the current page and never overwrites existing notes.'}
             </Text>
 
             <ScrollView style={{ flex: 1, marginVertical: 12 }}>
@@ -1816,7 +1800,7 @@ export default function App() {
             <View style={styles.footer}>
               <View style={styles.btnRow}>
                 <HighContrastButton
-                  label={tocUpdatedAt ? '🔄 Update ToC (Page 1)' : '📖 Build ToC (Page 1)'}
+                  label="📖 Build ToC on current page"
                   onPress={handleBuildToc}
                   disabled={!isNoteFile || isGeneratingToc}
                 />
