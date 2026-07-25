@@ -9,36 +9,12 @@ export interface HeadingItem {
   page: number; // 1-indexed page number for display
 }
 
-export interface KeywordOccurrence {
-  keyword: string;
-  pages: number[]; // Sorted 1-indexed page numbers for display
-}
-
 export interface GenerateResult {
   success: boolean;
   message?: string;
   needsBlankPage?: boolean; // page 1 has user content; caller should prompt to insert a blank page
   headings?: HeadingItem[]; // headings used to build the ToC (so the caller can persist without re-scanning)
 }
-
-const COMMON_STOP_WORDS = new Set([
-  'a', 'about', 'above', 'after', 'again', 'against', 'all', 'am', 'an', 'and', 'any', 'are', 'aren\'t',
-  'as', 'at', 'be', 'because', 'been', 'before', 'being', 'below', 'between', 'both', 'but', 'by', 'can',
-  'can\'t', 'cannot', 'could', 'couldn\'t', 'did', 'didn\'t', 'do', 'does', 'doesn\'t', 'doing', 'don\'t',
-  'down', 'during', 'each', 'few', 'for', 'from', 'further', 'had', 'hadn\'t', 'has', 'hasn\'t', 'have',
-  'haven\'t', 'having', 'he', 'he\'d', 'he\'ll', 'he\'s', 'her', 'here', 'here\'s', 'hers', 'herself',
-  'him', 'himself', 'his', 'how', 'how\'s', 'i', 'i\'d', 'i\'ll', 'i\'m', 'i\'ve', 'if', 'in', 'into',
-  'is', 'isn\'t', 'it', 'it\'s', 'its', 'itself', 'let\'s', 'me', 'more', 'most', 'mustn\'t', 'my',
-  'myself', 'no', 'nor', 'not', 'of', 'off', 'on', 'once', 'only', 'or', 'other', 'ought', 'our', 'ours',
-  'ourselves', 'out', 'over', 'own', 'same', 'shan\'t', 'she', 'she\'d', 'she\'ll', 'she\'s', 'should',
-  'shouldn\'t', 'so', 'some', 'such', 'than', 'that', 'that\'s', 'the', 'their', 'theirs', 'them',
-  'themselves', 'then', 'there', 'there\'s', 'these', 'they', 'they\'d', 'they\'ll', 'they\'re',
-  'they\'ve', 'this', 'those', 'through', 'to', 'too', 'under', 'until', 'up', 'very', 'was', 'wasn\'t',
-  'we', 'we\'d', 'we\'ll', 'we\'re', 'we\'ve', 'were', 'weren\'t', 'what', 'what\'s', 'when', 'when\'s',
-  'where', 'where\'s', 'which', 'while', 'who', 'who\'s', 'whom', 'why', 'why\'s', 'with', 'won\'t',
-  'would', 'wouldn\'t', 'you', 'you\'d', 'you\'ll', 'you\'re', 'you\'ve', 'your', 'yours', 'yourself',
-  'yourselves', 'page', 'note', 'title', 'heading', 'text', 'line', 'link'
-]);
 
 const safeStringify = (obj: any): string => {
   try {
@@ -53,7 +29,13 @@ const safeStringify = (obj: any): string => {
  */
 const isTocElement = (elem: any): boolean => {
   if (!elem) return false;
-  const SEARCH_TERMS = ['TABLE OF CONTENTS', 'TABLE OF CONTENT', 'CONTENTS', 'TOC'];
+  // Match ONLY the full header phrase we actually write ('TABLE OF CONTENTS'). The short
+  // terms 'TOC'/'CONTENTS' were removed because this does a substring match over the whole
+  // stringified element, so ordinary words — "protocol", "stochastic", "photocopy" (all
+  // contain "toc") — were misclassifying a real content page as a stale ToC. That let the
+  // refresh path clear (replaceElements → []) the user's actual notes. Never reintroduce
+  // loose substrings here: it is the guard that protects against data loss.
+  const SEARCH_TERMS = ['TABLE OF CONTENTS', 'TABLE OF CONTENT'];
 
   const strRep = safeStringify(elem).toUpperCase();
   for (const term of SEARCH_TERMS) {
@@ -309,7 +291,7 @@ const recognizeTitleStrokes = async (
 };
 
 /**
- * Page-size-aware layout geometry shared by the ToC and Keyword Index renderers.
+ * Page-size-aware layout geometry for the ToC renderer.
  * All x/y are in the note's pixel coordinate space. Deriving these from the real
  * page size (via PluginFileAPI.getPageSize) is what keeps both portrait and
  * landscape correct and puts every link in one right-margin column.
@@ -574,92 +556,6 @@ export class IndexService {
   }
 
   /**
-   * Scan keywords from note pages using hybrid extraction.
-   */
-  static async scanKeywords(notePath: string): Promise<KeywordOccurrence[]> {
-    if (!notePath) return [];
-    try {
-      const { PluginFileAPI } = require('sn-plugin-lib');
-      const totalPagesRes: any = await PluginFileAPI.getNoteTotalPageNum(notePath);
-      const totalPages = typeof totalPagesRes === 'number'
-        ? totalPagesRes
-        : (typeof totalPagesRes?.result === 'number' ? totalPagesRes.result : (totalPagesRes?.data || 1));
-      
-      const pageList = Array.from({ length: totalPages }, (_, i) => i);
-      const keywordMap = new Map<string, Set<number>>();
-
-      // 1. Scan native Supernote keywords
-      try {
-        const nativeKwRes: any = await PluginFileAPI.getKeyWords(notePath, pageList);
-        const rawNative = Array.isArray(nativeKwRes) ? nativeKwRes : (nativeKwRes?.result || nativeKwRes?.data || []);
-        for (const item of rawNative) {
-          const kw = extractTitleString(item);
-          const pg = typeof item?.page === 'number' ? item.page : parseInt(item?.page, 10);
-          if (kw && pg !== undefined && !isNaN(pg) && pg > 0 && !isTocElement(kw)) {
-            const cleanKw = kw.trim();
-            if (cleanKw.length >= 2) {
-              const displayPg = pg + 1; // 1-indexed display
-              if (!keywordMap.has(cleanKw)) {
-                keywordMap.set(cleanKw, new Set());
-              }
-              keywordMap.get(cleanKw)!.add(displayPg);
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('getKeyWords error:', e);
-      }
-
-      // 2. Scan text elements & recognition text on each page in parallel (excluding Page 0)
-      const nonTocPages = pageList.filter(p => p > 0);
-      const elementsResults = await Promise.all(
-        nonTocPages.map(pg => PluginFileAPI.getElements(pg, notePath).catch(() => null))
-      );
-
-      for (let idx = 0; idx < nonTocPages.length; idx++) {
-        const p = nonTocPages[idx];
-        const elementsRes: any = elementsResults[idx];
-        const rawElements = Array.isArray(elementsRes) ? elementsRes : (elementsRes?.result || elementsRes?.data || []);
-        
-        for (const elem of rawElements) {
-          const extractedText = getRecognizedTextForElement(elem);
-
-          if (extractedText && !isTocElement(extractedText)) {
-            const tokens = extractedText.split(/[^a-zA-Z0-9_\-\u00C0-\u024F]+/);
-            for (const token of tokens) {
-              const cleanToken = token.trim();
-              const lower = cleanToken.toLowerCase();
-              
-              if (cleanToken.length >= 3 && isNaN(Number(cleanToken)) && !COMMON_STOP_WORDS.has(lower)) {
-                const displayWord = cleanToken.charAt(0).toUpperCase() + cleanToken.slice(1);
-                if (!keywordMap.has(displayWord)) {
-                  keywordMap.set(displayWord, new Set());
-                }
-                keywordMap.get(displayWord)!.add(p + 1);
-              }
-            }
-          }
-        }
-      }
-
-      const result: KeywordOccurrence[] = [];
-      for (const [kw, pageSet] of keywordMap.entries()) {
-        const sortedPages = Array.from(pageSet).sort((a, b) => a - b);
-        result.push({
-          keyword: kw,
-          pages: sortedPages,
-        });
-      }
-
-      result.sort((a, b) => a.keyword.localeCompare(b.keyword));
-      return result;
-    } catch (e) {
-      console.error('Failed to scan keywords:', e);
-      return [];
-    }
-  }
-
-  /**
    * Insert or update the Table of Contents on Page 1 with per-row try/catch error boundaries.
    */
   static async generateTocPage(
@@ -669,7 +565,7 @@ export class IndexService {
   ): Promise<GenerateResult> {
     if (!notePath) return { success: false, message: 'No active note open' };
     try {
-      const { PluginFileAPI, PluginNoteAPI, PluginCommAPI, PluginManager } = require('sn-plugin-lib');
+      const { PluginFileAPI, PluginNoteAPI, PluginCommAPI } = require('sn-plugin-lib');
 
       const readPage = async (p: number): Promise<any[]> => {
         const r: any = await PluginFileAPI.getElements(p, notePath).catch(() => null);
@@ -680,15 +576,14 @@ export class IndexService {
         return typeof r?.result === 'number' ? r.result : (typeof r === 'number' ? r : -1);
       };
 
-      let headings = await this.scanHeadings(notePath, onPhase);
-      if (headings.length === 0) {
-        return { success: false, message: 'No titles or headings found in this note.' };
-      }
+      // Classify the CURRENT page BEFORE any expensive scan/recognition, so an unusable
+      // target is reported instantly. insertText writes to whatever page is current:
+      // blank → write here; existing ToC → refresh in place; real content → refuse
+      // (never overwrite). We do NOT auto-insert a page — programmatic page insertion
+      // corrupts the page shown in the viewer, so the user adds a blank page themselves.
+      const NOT_BLANK_MSG =
+        'This page is not blank. The Table of Contents is written on the current page and never overwrites your notes — open or add a blank page, then tap Build ToC.';
 
-      // The ToC is written with insertText, which writes to the CURRENT page. So the ToC lands
-      // wherever the reader is. Classify that page: blank → write there; existing ToC → refresh
-      // in place; real content → insert a fresh blank page here (pushing content down) so we
-      // never overwrite. A hard guard below refuses to write unless the target page is empty.
       const startPage = await readCurrentPage();
       if (startPage < 0) {
         return { success: false, message: 'Could not read the current page. Open the note to a blank page where the ToC should go, then tap Build.' };
@@ -697,17 +592,20 @@ export class IndexService {
       const startHasToc = startElems.some((e: any) => isTocElement(e));
       const startHasContent = startElems.length > 0 && !startHasToc;
 
-      let insertedBlank = false;
+      // Real content on this page → stop immediately, before any scanning/recognition.
       if (startHasContent) {
-        const pluginDir = await PluginManager.getPluginDirPath().catch(() => null);
-        if (!pluginDir) return { success: false, message: 'Could not access plugin storage to create a blank page.' };
-        const tplPng = `${pluginDir}/toc_tpl_${Date.now()}.png`;
-        await PluginFileAPI.generateNoteTemplatePng(notePath, startPage, tplPng).catch(() => null);
-        await PluginFileAPI.insertNotePage({ notePath, page: startPage, template: tplPng });
-        try { await PluginNoteAPI.saveCurrentNote(); await PluginCommAPI.reloadFile(); } catch (e) {}
-        insertedBlank = true;
-      } else if (startHasToc) {
-        // Refresh in place: clear the existing ToC on this page.
+        return { success: false, needsBlankPage: true, message: NOT_BLANK_MSG };
+      }
+
+      // Page is writable (blank or an existing ToC) → now run the expensive scan.
+      const headings = await this.scanHeadings(notePath, onPhase);
+      if (headings.length === 0) {
+        return { success: false, message: 'No titles or headings found in this note.' };
+      }
+
+      // Existing ToC on this page → refresh in place: clear it now that we know there
+      // are headings to write (so a refresh never wipes an old ToC only to write nothing).
+      if (startHasToc) {
         try {
           await PluginNoteAPI.saveCurrentNote();
           await PluginFileAPI.replaceElements(notePath, startPage, []);
@@ -720,27 +618,12 @@ export class IndexService {
         } catch (e) { console.warn('clear ToC error:', e); }
       }
 
-      // HARD GUARD: insertText writes to whatever page is CURRENT right now. Only write if that
-      // page is empty — otherwise abort (and roll back a blank we added) so notes are never
-      // overwritten.
+      // HARD GUARD: insertText writes to whatever page is CURRENT right now. Only write if
+      // that page is empty, so notes are never overwritten (final safety net).
       const target = await readCurrentPage();
       const targetElems = target >= 0 ? await readPage(target) : [1];
       if (target < 0 || targetElems.length > 0) {
-        if (insertedBlank && startPage >= 0) {
-          try { await PluginFileAPI.removeNotePage(notePath, startPage); await PluginNoteAPI.saveCurrentNote(); await PluginCommAPI.reloadFile(); } catch (e) {}
-        }
-        return {
-          success: false,
-          message: 'The target page is not empty, so nothing was written (your notes are untouched). Navigate to a blank page and tap Build there.',
-        };
-      }
-
-      // Re-scan ONLY if we inserted a blank page, since that shifts page numbers. In the
-      // common case (writing to an already-blank page) the first scan's results — including
-      // the expensive handwriting recognition — are still valid, so we reuse them and skip
-      // a second scan (roughly halving generation time).
-      if (insertedBlank) {
-        headings = await this.scanHeadings(notePath, onPhase);
+        return { success: false, needsBlankPage: true, message: NOT_BLANK_MSG };
       }
       const totalPagesRes: any = await PluginFileAPI.getNoteTotalPageNum(notePath);
       const totalPages = typeof totalPagesRes === 'number'
@@ -843,146 +726,6 @@ export class IndexService {
     } catch (e: any) {
       console.error('Failed to generate ToC page:', e);
       return { success: false, message: e?.message || 'Failed to generate ToC page' };
-    }
-  }
-
-  /**
-   * Insert or update the Keyword Index page.
-   */
-  static async generateIndexPage(notePath: string, customFontSize?: number): Promise<GenerateResult> {
-    if (!notePath) return { success: false, message: 'No active note open' };
-    try {
-      const { PluginFileAPI, PluginNoteAPI, PluginCommAPI } = require('sn-plugin-lib');
-
-      const keywords = await this.scanKeywords(notePath);
-      if (keywords.length === 0) {
-        return { success: false, message: 'No keywords found in this note.' };
-      }
-
-      const totalPagesRes: any = await PluginFileAPI.getNoteTotalPageNum(notePath);
-      const totalPages = typeof totalPagesRes === 'number'
-        ? totalPagesRes
-        : (typeof totalPagesRes?.result === 'number' ? totalPagesRes.result : (totalPagesRes?.data || 1));
-
-      const fontSize = customFontSize || (await StorageService.getInsertFontSize()) || 36;
-      const headerFontSize = fontSize + 6;
-      const linkFontSize = Math.round(fontSize * 0.85);
-      const subtitleFontSize = Math.max(18, fontSize - 12);
-
-      // Page-size-aware layout (read the current page, since the index writes there).
-      let currentPage = 0;
-      try {
-        const cp: any = await PluginCommAPI.getCurrentPageNum();
-        currentPage = typeof cp?.result === 'number' ? cp.result : (typeof cp === 'number' ? cp : 0);
-      } catch (e) {}
-      let pageWidth = 1404, pageHeight = 1872;
-      const sizeRes: any = await PluginFileAPI.getPageSize(notePath, currentPage).catch(() => null);
-      if (sizeRes?.success && sizeRes.result) {
-        pageWidth = sizeRes.result.width;
-        pageHeight = sizeRes.result.height;
-      }
-      const L = computeIndexLayout(pageWidth, pageHeight, fontSize);
-      const textRight = L.linkLeft - Math.round(fontSize * 0.6); // index rows keep the page list inline
-
-      // Heading, underline rule, and subtitle (note name + date).
-      try {
-        await PluginNoteAPI.insertText({
-          textContentFull: 'KEYWORD INDEX',
-          textRect: { left: L.leftMargin, top: L.headerTopY, right: L.rightMargin, bottom: L.headerTopY + 70 },
-          fontSize: headerFontSize, textAlign: 0, textBold: 1, textItalics: 0,
-          textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
-        });
-        await PluginNoteAPI.insertText({
-          textContentFull: ruleText(L.leftMargin, L.rightMargin, fontSize),
-          textRect: { left: L.leftMargin, top: L.ruleY, right: L.rightMargin, bottom: L.ruleY + Math.round(fontSize * 0.9) },
-          fontSize, textAlign: 0, textBold: 0, textItalics: 0,
-          textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
-        });
-        await PluginNoteAPI.insertText({
-          textContentFull: generatedSubtitle(notePath),
-          textRect: { left: L.leftMargin, top: L.subtitleY, right: L.rightMargin, bottom: L.subtitleY + Math.round(subtitleFontSize * 1.3) },
-          fontSize: subtitleFontSize, textAlign: 0, textBold: 0, textItalics: 1,
-          textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
-        });
-      } catch (e) {
-        console.warn('insertText index header error:', e);
-      }
-
-      let currentGroup = '';
-      let rowIdx = 0;
-      const displayChunk = keywords.slice(0, L.rowsPerPage);
-
-      for (let idx = 0; idx < displayChunk.length; idx++) {
-        const kw = displayChunk[idx];
-        const firstLetter = kw.keyword.charAt(0).toUpperCase();
-
-        if (firstLetter !== currentGroup) {
-          currentGroup = firstLetter;
-          const groupY = L.firstRowY + (rowIdx * L.rowSpacing);
-          try {
-            await PluginNoteAPI.insertText({
-              textContentFull: `--- [ ${currentGroup} ] ---`,
-              textRect: { left: L.leftMargin, top: groupY, right: L.rightMargin, bottom: groupY + Math.round(fontSize * 1.3) },
-              fontSize: fontSize - 2, textAlign: 0, textBold: 1, textItalics: 1,
-              textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
-            });
-          } catch (e) {}
-          rowIdx++;
-        }
-
-        const itemY = L.firstRowY + (rowIdx * L.rowSpacing);
-
-        // Keyword + inline page list, truncated so the page numbers stay visible.
-        const pagesStr = kw.pages.join(', ');
-        const suffix = ` …… p. ${pagesStr}`;
-        const reserved = Math.round(suffix.length * fontSize * 0.52);
-        const keywordText = fitTitle('', kw.keyword, (textRight - L.leftMargin) - reserved, fontSize);
-        try {
-          await PluginNoteAPI.insertText({
-            textContentFull: `${keywordText}${suffix}`,
-            textRect: { left: L.leftMargin, top: itemY, right: textRight, bottom: itemY + Math.round(fontSize * 1.3) },
-            fontSize, textAlign: 0, textBold: 0, textItalics: 0,
-            textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
-          });
-        } catch (e) {}
-
-        // Link ↗ — fixed right-margin column, identical x for every row.
-        if (kw.pages.length > 0) {
-          const safeDestPage = Math.min(totalPages - 1, Math.max(0, kw.pages[0] - 1));
-          try {
-            await PluginNoteAPI.insertTextLink({
-              destPath: notePath, destPage: safeDestPage, style: 0, linkType: 0,
-              rect: { left: L.linkLeft, top: itemY, right: L.rightMargin, bottom: itemY + Math.round(linkFontSize * 1.2) },
-              fontSize: linkFontSize, fullText: '↗', showText: '↗', isItalic: 0,
-            });
-          } catch (e) {}
-        }
-
-        rowIdx++;
-      }
-
-      // Footer noting truncation when there are more keywords than fit on one page.
-      if (keywords.length > displayChunk.length) {
-        const footerY = L.firstRowY + (rowIdx * L.rowSpacing);
-        try {
-          await PluginNoteAPI.insertText({
-            textContentFull: `Showing ${displayChunk.length} of ${keywords.length} keywords`,
-            textRect: { left: L.leftMargin, top: footerY, right: L.rightMargin, bottom: footerY + Math.round(subtitleFontSize * 1.3) },
-            fontSize: subtitleFontSize, textAlign: 0, textBold: 0, textItalics: 1,
-            textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
-          });
-        } catch (e) {}
-      }
-
-      try {
-        await PluginNoteAPI.saveCurrentNote();
-        await PluginCommAPI.reloadFile();
-      } catch (e) {}
-
-      return { success: true, message: 'Keyword Index created successfully!' };
-    } catch (e: any) {
-      console.error('Failed to generate Index page:', e);
-      return { success: false, message: e?.message || 'Failed to generate Index page' };
     }
   }
 }

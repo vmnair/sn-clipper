@@ -27,7 +27,7 @@ import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { SearchBar } from './components/SearchBar';
 import { FilterPopover } from './components/FilterPopover';
 import { SettingsPopover } from './components/SettingsPopover';
-import { IndexService, HeadingItem, KeywordOccurrence } from './services/IndexService';
+import { IndexService, HeadingItem } from './services/IndexService';
 import { ClipList } from './components/ClipList';
 import { deriveArticleName, isDocFile } from './utils/paths';
 import { splitTextToFit, countWrappedLines, measureWrappedText } from './utils/text';
@@ -113,17 +113,13 @@ export default function App() {
   const [showSourceInClipper, setShowSourceInClipper] = useState(true);
   const [insertSourceLink, setInsertSourceLink] = useState(true);
   const [enableToc, setEnableToc] = useState(false);
-  const [enableKeywordIndex, setEnableKeywordIndex] = useState(false);
 
-  // Tab State: 'clips' | 'toc' | 'index'
-  const [activeTab, setActiveTab] = useState<'clips' | 'toc' | 'index'>('clips');
+  // Tab State: 'clips' | 'toc'
+  const [activeTab, setActiveTab] = useState<'clips' | 'toc'>('clips');
   const [headings, setHeadings] = useState<HeadingItem[]>([]);
-  const [keywords, setKeywords] = useState<KeywordOccurrence[]>([]);
   const [isGeneratingToc, setIsGeneratingToc] = useState(false);
   const [tocPhase, setTocPhase] = useState<'scanning' | 'recognizing'>('scanning');
   const [tocUpdatedAt, setTocUpdatedAt] = useState<number | null>(null);
-  const [isScanningIndex, setIsScanningIndex] = useState(false);
-  const [indexSearchQuery, setIndexSearchQuery] = useState('');
 
   const [editingHeading, setEditingHeading] = useState<HeadingItem | null>(null);
   const [editTitleInput, setEditTitleInput] = useState<string>('');
@@ -132,8 +128,7 @@ export default function App() {
   // doesn't linger on screen after the feature is turned off.
   useEffect(() => {
     if (activeTab === 'toc' && !enableToc) setActiveTab('clips');
-    if (activeTab === 'index' && !enableKeywordIndex) setActiveTab('clips');
-  }, [enableToc, enableKeywordIndex, activeTab]);
+  }, [enableToc, activeTab]);
 
   const handleOpenEditHeadingModal = (h: HeadingItem) => {
     setEditingHeading(h);
@@ -215,8 +210,6 @@ export default function App() {
     StorageService.getShowSourceInClipper().then(setShowSourceInClipper);
     StorageService.getInsertSourceLink().then(setInsertSourceLink);
     StorageService.getEnableToc().then(setEnableToc);
-    // Keyword Index is on hold: keep it disabled regardless of any previously persisted value so
-    // the Index tab stays hidden (its Settings toggle has been removed).
 
     // Check active file context (Note vs Document)
     const runContextCheck = async () => {
@@ -421,12 +414,6 @@ export default function App() {
     return Array.from(new Set(sources));
   }, [clips]);
 
-  const filteredKeywords = useMemo(() => {
-    if (!indexSearchQuery.trim()) return keywords;
-    const q = indexSearchQuery.toLowerCase();
-    return keywords.filter((k) => k.keyword.toLowerCase().includes(q));
-  }, [keywords, indexSearchQuery]);
-
   // Memoized Filter & Sort Selector
   const processedClips = useMemo(() => {
     let list = [...clips];
@@ -624,20 +611,6 @@ export default function App() {
       PluginManager.closePluginView();
     } catch (err: any) {
       ToastAndroid.show(`Failed to open source document: ${err.message}`, ToastAndroid.SHORT);
-    }
-  };
-
-  const handleJumpToNotePage = async (pageNumber: number) => {
-    if (!currentFilePath) return;
-    try {
-      const pageIndex = Math.max(0, pageNumber - 1);
-      const { NativeModules } = require('react-native');
-      if (NativeModules.ImageCropModule && typeof NativeModules.ImageCropModule.openFileDirectly === 'function') {
-        await NativeModules.ImageCropModule.openFileDirectly(currentFilePath, pageIndex);
-      }
-      PluginManager.closePluginView();
-    } catch (err: any) {
-      ToastAndroid.show(`Failed to jump to page: ${err.message}`, ToastAndroid.SHORT);
     }
   };
 
@@ -1484,6 +1457,14 @@ export default function App() {
         setTocUpdatedAt(null);
         ToastAndroid.show(res.message || 'Table of Contents created!', ToastAndroid.LONG);
         PluginManager.closePluginView();
+      } else if (res.needsBlankPage) {
+        // Blocking dialog (easy-to-miss toast won't do): the page isn't blank. OK-only.
+        setConfirmTitle('Page is not blank!');
+        setConfirmDescription(res.message || 'Open or add a blank page, then tap Build ToC.');
+        setConfirmConfirmLabel('OK');
+        setConfirmCancelLabel('');
+        setOnConfirmCallback({ fn: () => setShowConfirmDialog(false) });
+        setShowConfirmDialog(true);
       } else {
         ToastAndroid.show(res.message || 'Failed to generate ToC page', ToastAndroid.LONG);
       }
@@ -1495,46 +1476,6 @@ export default function App() {
   };
 
   const handleBuildToc = () => { runTocBuild(); };
-
-  const handleRefreshIndex = async () => {
-    if (!currentFilePath) {
-      ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
-      return;
-    }
-    setIsScanningIndex(true);
-    try {
-      const items = await IndexService.scanKeywords(currentFilePath);
-      setKeywords(items);
-      if (items.length === 0) {
-        ToastAndroid.show('No keywords found in this note', ToastAndroid.SHORT);
-      }
-    } catch (e: any) {
-      ToastAndroid.show('Failed to scan keywords', ToastAndroid.SHORT);
-    } finally {
-      setIsScanningIndex(false);
-    }
-  };
-
-  const handleGenerateIndexPage = async () => {
-    if (!currentFilePath) {
-      ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
-      return;
-    }
-    setIsScanningIndex(true);
-    try {
-      const res = await IndexService.generateIndexPage(currentFilePath, insertFontSize);
-      if (res.success) {
-        ToastAndroid.show(res.message || 'Keyword Index generated at Last Page!', ToastAndroid.LONG);
-        PluginManager.closePluginView();
-      } else {
-        ToastAndroid.show(res.message || 'Failed to generate Keyword Index page', ToastAndroid.LONG);
-      }
-    } catch (e: any) {
-      ToastAndroid.show('Failed to generate Keyword Index page', ToastAndroid.LONG);
-    } finally {
-      setIsScanningIndex(false);
-    }
-  };
 
   if (isCropping) {
     return (
@@ -1636,7 +1577,7 @@ export default function App() {
         </View>
 
         {/* Navigation Bar (Tabs) */}
-        {(enableToc || enableKeywordIndex) && (
+        {enableToc && (
           <View style={styles.navTabBar}>
             <Pressable
               onPress={() => setActiveTab('clips')}
@@ -1653,19 +1594,6 @@ export default function App() {
               >
                 <Text style={[styles.navTabText, activeTab === 'toc' && styles.navTabTextActive]}>
                   📖 ToC ({headings.length})
-                </Text>
-              </Pressable>
-            )}
-            {enableKeywordIndex && (
-              <Pressable
-                onPress={() => {
-                  setActiveTab('index');
-                  if (keywords.length === 0) handleRefreshIndex();
-                }}
-                style={[styles.navTab, activeTab === 'index' && styles.navTabActive]}
-              >
-                <Text style={[styles.navTabText, activeTab === 'index' && styles.navTabTextActive]}>
-                  🏷️ Index ({keywords.length})
                 </Text>
               </Pressable>
             )}
@@ -1811,61 +1739,6 @@ export default function App() {
           </View>
         )}
 
-        {/* Tab 3: Keyword Index View */}
-        {enableKeywordIndex && activeTab === 'index' && (
-          <View style={styles.tabViewContainer}>
-            <Text style={styles.subtitle}>
-              {isScanningIndex ? 'Scanning note keywords...' : `${filteredKeywords.length} unique keyword(s) found`}
-            </Text>
-
-            <SearchBar
-              value={indexSearchQuery}
-              onChangeText={setIndexSearchQuery}
-              onClear={() => setIndexSearchQuery('')}
-            />
-
-            <ScrollView style={{ flex: 1, marginVertical: 12 }}>
-              {filteredKeywords.length === 0 ? (
-                <Text style={{ textAlign: 'center', marginVertical: 32, fontSize: 16, color: '#666' }}>
-                  No keywords detected. Text and native keywords will appear here automatically.
-                </Text>
-              ) : (
-                filteredKeywords.map((kw, idx) => (
-                  <View key={idx} style={styles.indexCard}>
-                    <View style={styles.indexWordRow}>
-                      <Text style={styles.indexWord}>{kw.keyword}</Text>
-                      {kw.pages.length > 0 && (
-                        <Pressable
-                          onPress={() => handleJumpToNotePage(kw.pages[0])}
-                          style={styles.jumpButton}
-                        >
-                          <Text style={styles.jumpButtonText}>↗ Jump (p. {kw.pages[0]})</Text>
-                        </Pressable>
-                      )}
-                    </View>
-                    <Text style={styles.indexPages}>Occurrences on page(s): {kw.pages.join(', ')}</Text>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-
-            <View style={styles.footer}>
-              <View style={styles.btnRow}>
-                <HighContrastButton
-                  label="🏷️ Build / Update Index (Last Page)"
-                  onPress={handleGenerateIndexPage}
-                  disabled={!isNoteFile || isScanningIndex}
-                />
-                <HighContrastButton
-                  label="🔄 Refresh"
-                  onPress={handleRefreshIndex}
-                  disabled={!isNoteFile || isScanningIndex}
-                />
-              </View>
-            </View>
-          </View>
-        )}
-
         <Text style={styles.buildLabel}>{BUILD_LABEL}</Text>
       </View>
 
@@ -2005,7 +1878,7 @@ export default function App() {
               </Text>
               <Text style={{ textAlign: 'center', color: '#666', marginTop: 6 }}>
                 {tocPhase === 'recognizing'
-                  ? 'Converting handwritten titles to text — this is the slow part.'
+                  ? 'Converting handwritten titles to text — this may take some time.'
                   : 'Reading the note’s titles.'}
               </Text>
             </View>
@@ -2185,18 +2058,6 @@ const styles = StyleSheet.create({
     color: '#666666',
     marginRight: 12,
   },
-  jumpButton: {
-    borderWidth: 1,
-    borderColor: '#000000',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    backgroundColor: '#f0f0f0',
-  },
-  jumpButtonText: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#000000',
-  },
   editButton: {
     borderWidth: 1,
     borderColor: '#000000',
@@ -2269,27 +2130,5 @@ const styles = StyleSheet.create({
   modalBtnSaveText: {
     color: '#ffffff',
     fontWeight: 'bold',
-  },
-  indexCard: {
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#000000',
-    backgroundColor: '#ffffff',
-    marginBottom: 8,
-  },
-  indexWordRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  indexWord: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#000000',
-  },
-  indexPages: {
-    fontSize: 14,
-    color: '#666666',
-    marginTop: 4,
   },
 });

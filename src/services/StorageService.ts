@@ -40,7 +40,6 @@ const COMBINE_INSERTED_KEY = 'clipper_combine_inserted';
 const SHOW_SOURCE_KEY = 'clipper_show_source';
 const INSERT_SOURCE_LINK_KEY = 'clipper_insert_source_link';
 const ENABLE_TOC_KEY = 'clipper_enable_toc';
-const ENABLE_KEYWORD_INDEX_KEY = 'clipper_enable_keyword_index';
 
 // Font-size presets for inserted note text. Medium is the historical default (44).
 export const INSERT_FONT_SIZES = { small: 32, medium: 44, large: 56 } as const;
@@ -394,31 +393,6 @@ export class StorageService {
       await AsyncStorage.setItem(ENABLE_TOC_KEY, value ? 'true' : 'false');
     } catch (e) {
       console.error('Failed to save enable-toc setting:', e);
-    }
-  }
-
-  /**
-   * Retrieve whether Keyword Index feature is enabled (default true).
-   */
-  static async getEnableKeywordIndex(): Promise<boolean> {
-    try {
-      const value = await AsyncStorage.getItem(ENABLE_KEYWORD_INDEX_KEY);
-      if (value === null) return true;
-      return value === 'true';
-    } catch (e) {
-      console.error('Failed to load enable-keyword-index setting:', e);
-    }
-    return true;
-  }
-
-  /**
-   * Persist whether Keyword Index feature is enabled.
-   */
-  static async setEnableKeywordIndex(value: boolean): Promise<void> {
-    try {
-      await AsyncStorage.setItem(ENABLE_KEYWORD_INDEX_KEY, value ? 'true' : 'false');
-    } catch (e) {
-      console.error('Failed to save enable-keyword-index setting:', e);
     }
   }
 }
