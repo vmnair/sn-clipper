@@ -308,11 +308,118 @@ const recognizeTitleStrokes = async (
   }
 };
 
+/**
+ * Page-size-aware layout geometry shared by the ToC and Keyword Index renderers.
+ * All x/y are in the note's pixel coordinate space. Deriving these from the real
+ * page size (via PluginFileAPI.getPageSize) is what keeps both portrait and
+ * landscape correct and puts every link in one right-margin column.
+ */
+interface IndexLayout {
+  leftMargin: number;
+  rightMargin: number;
+  linkLeft: number; // left x of the fixed link column (same for every row)
+  pageNumLeft: number; // left x of the right-aligned page-number column
+  titleRight: number; // right x the (truncatable) title text may occupy
+  rowSpacing: number;
+  headerTopY: number;
+  ruleY: number; // y of the underline rule below the heading
+  subtitleY: number; // y of the subtitle line
+  firstRowY: number; // y of the first entry row
+  rowsPerPage: number; // entries that fit on the page (footer row reserved)
+  footerY: number; // y of the "Showing N of M" footer
+}
+
+function computeIndexLayout(pageWidth: number, pageHeight: number, fontSize: number): IndexLayout {
+  const leftMargin = Math.round(pageWidth * 0.11); // ~150 on a 1404-wide portrait page
+  const rightMargin = pageWidth - Math.round(pageWidth * 0.06); // ~1320 portrait
+  const linkColW = Math.round(fontSize * 1.4);
+  const linkLeft = rightMargin - linkColW; // identical x for every row's ↗
+  const pageNumColW = Math.round(fontSize * 3.6); // fits "p. NNN"
+  const pageNumLeft = linkLeft - Math.round(fontSize * 0.6) - pageNumColW;
+  const titleRight = pageNumLeft - Math.round(fontSize * 0.4);
+  const rowSpacing = Math.round(fontSize * 1.6); // roomier than the old *1.5
+  const headerTopY = Math.round(pageHeight * 0.09); // ~168 portrait
+  const ruleY = headerTopY + Math.round(fontSize * 1.9);
+  const subtitleY = ruleY + Math.round(fontSize * 1.1);
+  const firstRowY = subtitleY + Math.round(fontSize * 2.0);
+  const bottomMargin = Math.round(pageHeight * 0.05);
+  const rowsPerPage = Math.max(
+    8,
+    Math.floor((pageHeight - firstRowY - bottomMargin) / rowSpacing) - 1, // -1 reserves the footer row
+  );
+  const footerY = firstRowY + rowsPerPage * rowSpacing;
+  return {
+    leftMargin, rightMargin, linkLeft, pageNumLeft, titleRight,
+    rowSpacing, headerTopY, ruleY, subtitleY, firstRowY, rowsPerPage, footerY,
+  };
+}
+
+/**
+ * Truncate a title so "{prefix}{title}" fits the given pixel width, appending an
+ * ellipsis when clipped. Width is estimated (no text-measure API on this path);
+ * the 0.52 factor is the tuning knob if titles look too tight/loose on device.
+ */
+function fitTitle(prefix: string, title: string, availableWidth: number, fontSize: number): string {
+  const maxChars = Math.max(4, Math.floor(availableWidth / (fontSize * 0.52)));
+  const full = `${prefix}${title}`;
+  if (full.length <= maxChars) return full;
+  return `${full.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+/**
+ * Title + a classic dot leader, sized to stay WITHIN the title element's frame.
+ * The dot count is estimated from the fitted title's width (no text-measure API), so
+ * right ends are slightly ragged across rows — that is acceptable and, critically,
+ * safe: the Supernote note core mishandles text that overflows a fixed-width text box
+ * (it drops/garbles the element), so we must never overfill. We deliberately underfill
+ * by ~1 dot. `0.30`/`0.52` are the tuning knobs.
+ */
+function titleWithLeader(prefix: string, title: string, availableWidth: number, fontSize: number): string {
+  const charW = fontSize * 0.52; // avg glyph width (same factor as fitTitle)
+  const dotW = fontSize * 0.30;  // '.' leader width estimate
+  const gapW = fontSize * 0.5;   // space between title and dots
+  // Reserve room for at least a few dots so short titles still get a leader.
+  const fitted = fitTitle(prefix, title, availableWidth - gapW - dotW * 3, fontSize);
+  const usedW = fitted.length * charW + gapW;
+  // Underfill by ~1 dot so the text never overruns the frame.
+  const dotCount = Math.max(3, Math.floor((availableWidth - usedW - dotW) / dotW));
+  return `${fitted} ${'.'.repeat(dotCount)}`;
+}
+
+/** A row of box-drawing chars spanning [leftMargin, rightMargin] for the heading rule. */
+function ruleText(leftMargin: number, rightMargin: number, fontSize: number): string {
+  const count = Math.max(1, Math.floor((rightMargin - leftMargin) / (fontSize * 0.5)));
+  return '─'.repeat(count);
+}
+
+/** Basename of a note path with the extension stripped, for the subtitle line. */
+function noteDisplayName(notePath: string): string {
+  const base = (notePath || '').split('/').pop() || 'Note';
+  return base.replace(/\.[^.]+$/, '') || 'Note';
+}
+
+/**
+ * Subtitle shown under the heading: "{note name}  ·  Generated {date}, {h:mm AM/PM}".
+ * Time is built by hand rather than via Intl/toLocaleString options, whose support
+ * is unreliable under Hermes (plain toLocaleDateString already works in this runtime).
+ */
+function generatedSubtitle(notePath: string): string {
+  const now = new Date();
+  const h24 = now.getHours();
+  const h12 = (h24 % 12) || 12;
+  const mm = now.getMinutes().toString().padStart(2, '0');
+  const ampm = h24 >= 12 ? 'PM' : 'AM';
+  return `${noteDisplayName(notePath)}  ·  Generated ${now.toLocaleDateString()}, ${h12}:${mm} ${ampm}`;
+}
+
 export class IndexService {
   /**
    * Fetch all headings / titles across pages of the specified note file.
    */
-  static async scanHeadings(notePath: string): Promise<HeadingItem[]> {
+  static async scanHeadings(
+    notePath: string,
+    onPhase?: (phase: 'scanning' | 'recognizing') => void,
+  ): Promise<HeadingItem[]> {
     if (!notePath) return [];
     try {
       const { PluginFileAPI } = require('sn-plugin-lib');
@@ -358,6 +465,9 @@ export class IndexService {
       }
 
       if (missingTextPages.size > 0) {
+        // Some titles have no typed text — we're about to run handwriting recognition,
+        // which is the slow part. Tell the caller so it can update its progress message.
+        onPhase?.('recognizing');
         const pagesArray = Array.from(missingTextPages);
         const [elementsResults, sizeResults] = await Promise.all([
           Promise.all(pagesArray.map(pg => PluginFileAPI.getElements(pg, notePath).catch(() => null))),
@@ -377,7 +487,12 @@ export class IndexService {
 
       const perPageOrdinal = new Map<number, number>();
       const usedIds = new Set<string>();
-      let headingCounter = 1;
+
+      // Load user title overrides up front so an unreadable title the user has manually
+      // renamed is kept, while unreadable *unnamed* titles are skipped (never auto-named).
+      let overrides: Record<string, string> = {};
+      try { overrides = (await StorageService.getHeadingOverrides(notePath)) || {}; } catch (e) {}
+
       for (let i = 0; i < rawTitles.length; i++) {
         const item = rawTitles[i];
         if (!item) continue;
@@ -390,6 +505,19 @@ export class IndexService {
         const pageDisplay = rawPg + 1;
         const ord = perPageOrdinal.get(rawPg) || 0;
         perPageOrdinal.set(rawPg, ord + 1);
+
+        // Stable per-title identity for override matching: prefer the title's page position
+        // (survives re-scan unless the user moves the title); fall back to per-page ordinal.
+        // Assigned before the skip below so id numbering stays stable across scans.
+        let id = (typeof item.X === 'number' && typeof item.Y === 'number')
+          ? `p${rawPg}_y${Math.round(item.Y)}_x${Math.round(item.X)}`
+          : `p${rawPg}_i${ord}`;
+        if (usedIds.has(id)) {
+          let n = 1;
+          const base = id;
+          while (usedIds.has(id)) id = `${base}#${n++}`;
+        }
+        usedIds.add(id);
 
         let headingText = extractTitleString(item);
 
@@ -415,33 +543,21 @@ export class IndexService {
           if (recognized) headingText = recognized;
         }
 
-        if (!headingText) {
-          headingText = `Heading ${headingCounter}`;
+        // No typed text and no recognizable handwriting: skip this title entirely rather
+        // than invent a bogus "Heading N" — unless the user has manually named it.
+        if (!headingText && !overrides[id]) {
+          continue;
         }
-
-        // Stable per-title identity for override matching: prefer the title's page position
-        // (survives re-scan unless the user moves the title); fall back to per-page ordinal.
-        let id = (typeof item.X === 'number' && typeof item.Y === 'number')
-          ? `p${rawPg}_y${Math.round(item.Y)}_x${Math.round(item.X)}`
-          : `p${rawPg}_i${ord}`;
-        if (usedIds.has(id)) {
-          let n = 1;
-          const base = id;
-          while (usedIds.has(id)) id = `${base}#${n++}`;
-        }
-        usedIds.add(id);
 
         headings.push({
           id,
           title: headingText,
           page: pageDisplay,
         });
-        headingCounter++;
       }
 
-      // Merge custom title overrides from user edits
+      // Apply custom title overrides from user edits (loaded above).
       try {
-        const overrides = await StorageService.getHeadingOverrides(notePath);
         for (const h of headings) {
           if (overrides[h.id]) {
             h.title = overrides[h.id];
@@ -549,6 +665,7 @@ export class IndexService {
   static async generateTocPage(
     notePath: string,
     customFontSize?: number,
+    onPhase?: (phase: 'scanning' | 'recognizing') => void,
   ): Promise<GenerateResult> {
     if (!notePath) return { success: false, message: 'No active note open' };
     try {
@@ -563,7 +680,7 @@ export class IndexService {
         return typeof r?.result === 'number' ? r.result : (typeof r === 'number' ? r : -1);
       };
 
-      let headings = await this.scanHeadings(notePath);
+      let headings = await this.scanHeadings(notePath, onPhase);
       if (headings.length === 0) {
         return { success: false, message: 'No titles or headings found in this note.' };
       }
@@ -618,53 +735,103 @@ export class IndexService {
         };
       }
 
-      // Re-scan so page references reflect any inserted page.
-      headings = await this.scanHeadings(notePath);
+      // Re-scan ONLY if we inserted a blank page, since that shifts page numbers. In the
+      // common case (writing to an already-blank page) the first scan's results — including
+      // the expensive handwriting recognition — are still valid, so we reuse them and skip
+      // a second scan (roughly halving generation time).
+      if (insertedBlank) {
+        headings = await this.scanHeadings(notePath, onPhase);
+      }
       const totalPagesRes: any = await PluginFileAPI.getNoteTotalPageNum(notePath);
       const totalPages = typeof totalPagesRes === 'number'
         ? totalPagesRes
         : (typeof totalPagesRes?.result === 'number' ? totalPagesRes.result : (totalPagesRes?.data || 1));
 
       const fontSize = customFontSize || (await StorageService.getInsertFontSize()) || 36;
-      const rowSpacing = Math.round(fontSize * 1.5);
-      const headingsPerPage = Math.max(10, Math.floor(1440 / rowSpacing));
-      const headerTopY = 160;
       const headerFontSize = fontSize + 6;
-      const firstHeadingY = 260;
       const linkFontSize = Math.round(fontSize * 0.85);
+      const subtitleFontSize = Math.max(18, fontSize - 12);
 
-      // Write Title Header (to the verified-empty current page).
+      // Derive the whole layout from the REAL page size so portrait and landscape both
+      // fit and every link lands in one right-margin column (mirrors App.tsx getPageSize use).
+      let pageWidth = 1404, pageHeight = 1872;
+      const sizeRes: any = await PluginFileAPI.getPageSize(notePath, target).catch(() => null);
+      if (sizeRes?.success && sizeRes.result) {
+        pageWidth = sizeRes.result.width;
+        pageHeight = sizeRes.result.height;
+      }
+      const L = computeIndexLayout(pageWidth, pageHeight, fontSize);
+
+      // Heading, underline rule, and subtitle (note name + date).
       try {
         await PluginNoteAPI.insertText({
           textContentFull: 'TABLE OF CONTENTS',
-          textRect: { left: 200, top: headerTopY, right: 1160, bottom: headerTopY + 70 },
+          textRect: { left: L.leftMargin, top: L.headerTopY, right: L.rightMargin, bottom: L.headerTopY + 70 },
           fontSize: headerFontSize, textAlign: 0, textBold: 1, textItalics: 0,
+          textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
+        });
+        await PluginNoteAPI.insertText({
+          textContentFull: ruleText(L.leftMargin, L.rightMargin, fontSize),
+          textRect: { left: L.leftMargin, top: L.ruleY, right: L.rightMargin, bottom: L.ruleY + Math.round(fontSize * 0.9) },
+          fontSize, textAlign: 0, textBold: 0, textItalics: 0,
+          textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
+        });
+        await PluginNoteAPI.insertText({
+          textContentFull: generatedSubtitle(notePath),
+          textRect: { left: L.leftMargin, top: L.subtitleY, right: L.rightMargin, bottom: L.subtitleY + Math.round(subtitleFontSize * 1.3) },
+          fontSize: subtitleFontSize, textAlign: 0, textBold: 0, textItalics: 1,
           textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
         });
       } catch (e) { console.warn('insertText header error:', e); }
 
-      const displayChunk = headings.slice(0, headingsPerPage);
+      const displayChunk = headings.slice(0, L.rowsPerPage);
       for (let idx = 0; idx < displayChunk.length; idx++) {
         const h = displayChunk[idx];
-        const itemY = firstHeadingY + (idx * rowSpacing);
-        const lineText = `${idx + 1}. ${h.title} ........ p. ${h.page}`;
+        const itemY = L.firstRowY + (idx * L.rowSpacing);
+
+        // 1. Title (truncated with an ellipsis if too long) + gap-filling dot leader — left-aligned.
+        const titleText = titleWithLeader(`${idx + 1}. `, h.title, L.titleRight - L.leftMargin, fontSize);
         try {
           await PluginNoteAPI.insertText({
-            textContentFull: lineText,
-            textRect: { left: 200, top: itemY, right: 1160, bottom: itemY + Math.round(fontSize * 1.3) },
+            textContentFull: titleText,
+            textRect: { left: L.leftMargin, top: itemY, right: L.titleRight, bottom: itemY + Math.round(fontSize * 1.3) },
             fontSize, textAlign: 0, textBold: 0, textItalics: 0,
             textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
           });
         } catch (e) { console.warn(`insertText row ${idx} error:`, e); }
 
+        // 2. Page number — right-aligned in its own column (textAlign 2 = right).
+        try {
+          await PluginNoteAPI.insertText({
+            textContentFull: `p. ${h.page}`,
+            textRect: { left: L.pageNumLeft, top: itemY, right: L.linkLeft - Math.round(fontSize * 0.4), bottom: itemY + Math.round(fontSize * 1.3) },
+            fontSize, textAlign: 2, textBold: 0, textItalics: 0,
+            textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
+          });
+        } catch (e) { console.warn(`insertText pagenum ${idx} error:`, e); }
+
+        // 3. Link ↗ — fixed right-margin column, identical x for every row.
         const safeDestPage = Math.min(totalPages - 1, Math.max(0, h.page - 1));
         try {
           await PluginNoteAPI.insertTextLink({
             destPath: notePath, destPage: safeDestPage, style: 0, linkType: 0,
-            rect: { left: 1180, top: itemY, right: 1260, bottom: itemY + Math.round(linkFontSize * 1.2) },
+            rect: { left: L.linkLeft, top: itemY, right: L.rightMargin, bottom: itemY + Math.round(linkFontSize * 1.2) },
             fontSize: linkFontSize, fullText: '↗', showText: '↗', isItalic: 0,
           });
         } catch (e) { console.warn(`insertTextLink row ${idx} error:`, e); }
+      }
+
+      // Footer noting truncation when the note has more headings than fit on one page.
+      if (headings.length > displayChunk.length) {
+        const footerFontSize = Math.max(18, fontSize - 12);
+        try {
+          await PluginNoteAPI.insertText({
+            textContentFull: `Showing ${displayChunk.length} of ${headings.length} entries`,
+            textRect: { left: L.leftMargin, top: L.footerY, right: L.rightMargin, bottom: L.footerY + Math.round(footerFontSize * 1.3) },
+            fontSize: footerFontSize, textAlign: 0, textBold: 0, textItalics: 1,
+            textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
+          });
+        } catch (e) { console.warn('insertText footer error:', e); }
       }
 
       try {
@@ -698,34 +865,52 @@ export class IndexService {
         : (typeof totalPagesRes?.result === 'number' ? totalPagesRes.result : (totalPagesRes?.data || 1));
 
       const fontSize = customFontSize || (await StorageService.getInsertFontSize()) || 36;
-      const rowSpacing = Math.round(fontSize * 1.5);
-      const availableVerticalSpace = 1440;
-      const keywordsPerPage = Math.max(10, Math.floor(availableVerticalSpace / rowSpacing));
-
-      const pageHeaderTitle = 'KEYWORD INDEX';
-      const headerTopY = 160;
       const headerFontSize = fontSize + 6;
+      const linkFontSize = Math.round(fontSize * 0.85);
+      const subtitleFontSize = Math.max(18, fontSize - 12);
+
+      // Page-size-aware layout (read the current page, since the index writes there).
+      let currentPage = 0;
+      try {
+        const cp: any = await PluginCommAPI.getCurrentPageNum();
+        currentPage = typeof cp?.result === 'number' ? cp.result : (typeof cp === 'number' ? cp : 0);
+      } catch (e) {}
+      let pageWidth = 1404, pageHeight = 1872;
+      const sizeRes: any = await PluginFileAPI.getPageSize(notePath, currentPage).catch(() => null);
+      if (sizeRes?.success && sizeRes.result) {
+        pageWidth = sizeRes.result.width;
+        pageHeight = sizeRes.result.height;
+      }
+      const L = computeIndexLayout(pageWidth, pageHeight, fontSize);
+      const textRight = L.linkLeft - Math.round(fontSize * 0.6); // index rows keep the page list inline
+
+      // Heading, underline rule, and subtitle (note name + date).
       try {
         await PluginNoteAPI.insertText({
-          textContentFull: pageHeaderTitle,
-          textRect: { left: 200, top: headerTopY, right: 1160, bottom: headerTopY + 70 },
-          fontSize: headerFontSize,
-          textAlign: 0,
-          textBold: 1,
-          textItalics: 0,
-          textFrameWidthType: 0,
-          textFrameStyle: 0,
-          textEditable: 1,
+          textContentFull: 'KEYWORD INDEX',
+          textRect: { left: L.leftMargin, top: L.headerTopY, right: L.rightMargin, bottom: L.headerTopY + 70 },
+          fontSize: headerFontSize, textAlign: 0, textBold: 1, textItalics: 0,
+          textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
+        });
+        await PluginNoteAPI.insertText({
+          textContentFull: ruleText(L.leftMargin, L.rightMargin, fontSize),
+          textRect: { left: L.leftMargin, top: L.ruleY, right: L.rightMargin, bottom: L.ruleY + Math.round(fontSize * 0.9) },
+          fontSize, textAlign: 0, textBold: 0, textItalics: 0,
+          textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
+        });
+        await PluginNoteAPI.insertText({
+          textContentFull: generatedSubtitle(notePath),
+          textRect: { left: L.leftMargin, top: L.subtitleY, right: L.rightMargin, bottom: L.subtitleY + Math.round(subtitleFontSize * 1.3) },
+          fontSize: subtitleFontSize, textAlign: 0, textBold: 0, textItalics: 1,
+          textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
         });
       } catch (e) {
         console.warn('insertText index header error:', e);
       }
 
-      const firstHeadingY = 260;
-      const linkFontSize = Math.round(fontSize * 0.85);
       let currentGroup = '';
       let rowIdx = 0;
-      const displayChunk = keywords.slice(0, keywordsPerPage);
+      const displayChunk = keywords.slice(0, L.rowsPerPage);
 
       for (let idx = 0; idx < displayChunk.length; idx++) {
         const kw = displayChunk[idx];
@@ -733,61 +918,60 @@ export class IndexService {
 
         if (firstLetter !== currentGroup) {
           currentGroup = firstLetter;
-          const groupY = firstHeadingY + (rowIdx * rowSpacing);
+          const groupY = L.firstRowY + (rowIdx * L.rowSpacing);
           try {
             await PluginNoteAPI.insertText({
               textContentFull: `--- [ ${currentGroup} ] ---`,
-              textRect: { left: 200, top: groupY, right: 1160, bottom: groupY + Math.round(fontSize * 1.3) },
-              fontSize: fontSize - 2,
-              textAlign: 0,
-              textBold: 1,
-              textItalics: 1,
-              textFrameWidthType: 0,
-              textFrameStyle: 0,
-              textEditable: 1,
+              textRect: { left: L.leftMargin, top: groupY, right: L.rightMargin, bottom: groupY + Math.round(fontSize * 1.3) },
+              fontSize: fontSize - 2, textAlign: 0, textBold: 1, textItalics: 1,
+              textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
             });
           } catch (e) {}
           rowIdx++;
         }
 
-        const itemY = firstHeadingY + (rowIdx * rowSpacing);
-        const pagesStr = kw.pages.join(', ');
-        const lineStr = `${kw.keyword} ........ p. ${pagesStr}`;
+        const itemY = L.firstRowY + (rowIdx * L.rowSpacing);
 
-        // Text Box for Index row
+        // Keyword + inline page list, truncated so the page numbers stay visible.
+        const pagesStr = kw.pages.join(', ');
+        const suffix = ` …… p. ${pagesStr}`;
+        const reserved = Math.round(suffix.length * fontSize * 0.52);
+        const keywordText = fitTitle('', kw.keyword, (textRight - L.leftMargin) - reserved, fontSize);
         try {
           await PluginNoteAPI.insertText({
-            textContentFull: lineStr,
-            textRect: { left: 200, top: itemY, right: 1160, bottom: itemY + Math.round(fontSize * 1.3) },
-            fontSize,
-            textAlign: 0,
-            textBold: 0,
-            textItalics: 0,
-            textFrameWidthType: 0,
-            textFrameStyle: 0,
-            textEditable: 1,
+            textContentFull: `${keywordText}${suffix}`,
+            textRect: { left: L.leftMargin, top: itemY, right: textRight, bottom: itemY + Math.round(fontSize * 1.3) },
+            fontSize, textAlign: 0, textBold: 0, textItalics: 0,
+            textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
           });
         } catch (e) {}
 
-        // Link Icon for Index row with safe destPage bounds
+        // Link ↗ — fixed right-margin column, identical x for every row.
         if (kw.pages.length > 0) {
           const safeDestPage = Math.min(totalPages - 1, Math.max(0, kw.pages[0] - 1));
           try {
             await PluginNoteAPI.insertTextLink({
-              destPath: notePath,
-              destPage: safeDestPage,
-              style: 0,
-              linkType: 0,
-              rect: { left: 1180, top: itemY, right: 1260, bottom: itemY + Math.round(linkFontSize * 1.2) },
-              fontSize: linkFontSize,
-              fullText: '↗',
-              showText: '↗',
-              isItalic: 0,
+              destPath: notePath, destPage: safeDestPage, style: 0, linkType: 0,
+              rect: { left: L.linkLeft, top: itemY, right: L.rightMargin, bottom: itemY + Math.round(linkFontSize * 1.2) },
+              fontSize: linkFontSize, fullText: '↗', showText: '↗', isItalic: 0,
             });
           } catch (e) {}
         }
 
         rowIdx++;
+      }
+
+      // Footer noting truncation when there are more keywords than fit on one page.
+      if (keywords.length > displayChunk.length) {
+        const footerY = L.firstRowY + (rowIdx * L.rowSpacing);
+        try {
+          await PluginNoteAPI.insertText({
+            textContentFull: `Showing ${displayChunk.length} of ${keywords.length} keywords`,
+            textRect: { left: L.leftMargin, top: footerY, right: L.rightMargin, bottom: footerY + Math.round(subtitleFontSize * 1.3) },
+            fontSize: subtitleFontSize, textAlign: 0, textBold: 0, textItalics: 1,
+            textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
+          });
+        } catch (e) {}
       }
 
       try {

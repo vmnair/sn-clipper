@@ -120,6 +120,7 @@ export default function App() {
   const [headings, setHeadings] = useState<HeadingItem[]>([]);
   const [keywords, setKeywords] = useState<KeywordOccurrence[]>([]);
   const [isGeneratingToc, setIsGeneratingToc] = useState(false);
+  const [tocPhase, setTocPhase] = useState<'scanning' | 'recognizing'>('scanning');
   const [tocUpdatedAt, setTocUpdatedAt] = useState<number | null>(null);
   const [isScanningIndex, setIsScanningIndex] = useState(false);
   const [indexSearchQuery, setIndexSearchQuery] = useState('');
@@ -1470,9 +1471,10 @@ export default function App() {
       ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
       return;
     }
+    setTocPhase('scanning');
     setIsGeneratingToc(true);
     try {
-      const res = await IndexService.generateTocPage(currentFilePath, insertFontSize);
+      const res = await IndexService.generateTocPage(currentFilePath, insertFontSize, setTocPhase);
 
       if (res.success) {
         // The ToC now lives in the note — clear the Clipper snapshot so the ToC tab doesn't keep
@@ -1999,10 +2001,12 @@ export default function App() {
             <View style={styles.modalCard}>
               <ActivityIndicator size="large" color="#000000" style={{ marginBottom: 12 }} />
               <Text style={[styles.modalTitle, { marginBottom: 0, textAlign: 'center' }]}>
-                Generating ToC…
+                {tocPhase === 'recognizing' ? 'Recognizing handwriting…' : 'Scanning headings…'}
               </Text>
               <Text style={{ textAlign: 'center', color: '#666', marginTop: 6 }}>
-                Scanning headings — this can take a moment.
+                {tocPhase === 'recognizing'
+                  ? 'Converting handwritten titles to text — this is the slow part.'
+                  : 'Reading the note’s titles.'}
               </Text>
             </View>
           </View>
