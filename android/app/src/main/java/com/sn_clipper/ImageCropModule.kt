@@ -49,17 +49,16 @@ class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(Uri.fromFile(file), mimeType)
                 // DocumentActivity / NoteInsidePagesActivity are launchMode=singleTask, so a
-                // plain NEW_TASK launch reuses the live instance via onNewIntent, which re-runs
+                // plain NEW_TASK + CLEAR_TOP launch reuses the live instance via onNewIntent, which re-runs
                 // the reader's processIntent() and seeks to `page`.
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
 
-                // The Supernote reader resolves the target file from the `file_path` extra and
-                // seeks to `page` (see DocumentRout.documentProcessIntent /
-                // NoteInsidePagesActivity). Without `file_path` the parser falls back to the
-                // data-URI branch, which hard-codes page = -1 — so the reader ignores our
-                // target and shows the last-opened page instead (the "sticky page" bug).
                 putExtra("file_path", file.absolutePath)
+                putExtra("filePath", file.absolutePath)
                 putExtra("page", page)
+                putExtra("pageNum", page)
+                putExtra("pageNumber", page)
+                putExtra("jumpPage", page)
 
                 // Set the component explicitly to bypass the app chooser.
                 component = if (isNote) {

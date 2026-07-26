@@ -19,6 +19,8 @@ interface SettingsPopoverProps {
   onInsertSourceLinkChange: (value: boolean) => void;
   insertFontSize: number;
   onInsertFontSizeChange: (size: number) => void;
+  enableToc: boolean;
+  onEnableTocChange: (value: boolean) => void;
   onResetToDefault: () => void;
   onClose: () => void;
 }
@@ -51,6 +53,8 @@ export function SettingsPopover({
   onInsertSourceLinkChange,
   insertFontSize,
   onInsertFontSizeChange,
+  enableToc,
+  onEnableTocChange,
   onResetToDefault,
   onClose,
 }: SettingsPopoverProps) {
@@ -84,6 +88,21 @@ export function SettingsPopover({
             <Text style={styles.popoverRowHint}>Insert clips as one text block</Text>
           </View>
           <Badge selected={combineInserted} />
+        </Pressable>
+
+        <View style={styles.popoverDivider} />
+
+        <Text style={styles.popoverSectionHeader}>Table of Contents</Text>
+        <Pressable
+          onPress={() => onEnableTocChange(!enableToc)}
+          style={styles.popoverRow}
+          testID="setting-enable-toc"
+        >
+          <View style={styles.popoverLabelBlock}>
+            <Text style={styles.popoverRowLabel}>Enable Table of Contents (ToC)</Text>
+            <Text style={styles.popoverRowHint}>ToC tab &amp; Page 1 note generator</Text>
+          </View>
+          <Badge selected={enableToc} />
         </Pressable>
 
         <View style={styles.popoverDivider} />

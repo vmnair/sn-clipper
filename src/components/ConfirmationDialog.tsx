@@ -12,7 +12,8 @@ interface ConfirmationDialogProps {
   title: string;
   description: string;
   confirmLabel: string;
-  cancelLabel: string;
+  // Optional: when empty/omitted the dialog is single-button (e.g. an OK acknowledgement).
+  cancelLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -37,9 +38,11 @@ export function ConfirmationDialog({
           <Pressable onPress={onConfirm} style={[styles.modalButton, styles.modalButtonPrimary]}>
             <Text style={styles.modalButtonTextPrimary}>{confirmLabel}</Text>
           </Pressable>
-          <Pressable onPress={onCancel} style={[styles.modalButton, styles.modalButtonCancel]}>
-            <Text style={styles.modalButtonTextCancel}>{cancelLabel}</Text>
-          </Pressable>
+          {cancelLabel ? (
+            <Pressable onPress={onCancel} style={[styles.modalButton, styles.modalButtonCancel]}>
+              <Text style={styles.modalButtonTextCancel}>{cancelLabel}</Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
     </View>

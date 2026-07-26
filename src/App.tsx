@@ -11,6 +11,11 @@ import {
   Pressable,
   Image,
   AppState,
+  ScrollView,
+  FlatList,
+  TextInput,
+  Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { ClipService } from './services/ClipService';
 import { ClipItem, ClipSubElement, StorageService, DEFAULT_INSERT_FONT_SIZE } from './services/StorageService';
@@ -22,6 +27,7 @@ import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { SearchBar } from './components/SearchBar';
 import { FilterPopover } from './components/FilterPopover';
 import { SettingsPopover } from './components/SettingsPopover';
+import { IndexService, HeadingItem } from './services/IndexService';
 import { ClipList } from './components/ClipList';
 import { deriveArticleName, isDocFile } from './utils/paths';
 import { splitTextToFit, countWrappedLines, measureWrappedText } from './utils/text';
@@ -106,6 +112,55 @@ export default function App() {
   // gate the two display surfaces: the Clipper card jump icon, and the inserted-note link.
   const [showSourceInClipper, setShowSourceInClipper] = useState(true);
   const [insertSourceLink, setInsertSourceLink] = useState(true);
+  const [enableToc, setEnableToc] = useState(false);
+
+  // Tab State: 'clips' | 'toc'
+  const [activeTab, setActiveTab] = useState<'clips' | 'toc'>('clips');
+  const [headings, setHeadings] = useState<HeadingItem[]>([]);
+  const [isGeneratingToc, setIsGeneratingToc] = useState(false);
+  const [tocPhase, setTocPhase] = useState<'scanning' | 'recognizing'>('scanning');
+  const [tocUpdatedAt, setTocUpdatedAt] = useState<number | null>(null);
+
+  const [editingHeading, setEditingHeading] = useState<HeadingItem | null>(null);
+  const [editTitleInput, setEditTitleInput] = useState<string>('');
+
+  // If the active tab gets disabled in Settings, fall back to the Clips tab so its content
+  // doesn't linger on screen after the feature is turned off.
+  useEffect(() => {
+    if (activeTab === 'toc' && !enableToc) setActiveTab('clips');
+  }, [enableToc, activeTab]);
+
+  const handleOpenEditHeadingModal = (h: HeadingItem) => {
+    setEditingHeading(h);
+    setEditTitleInput(h.title);
+  };
+
+  const handleSaveHeadingTitle = async () => {
+    if (!editingHeading || !currentFilePath) return;
+    try {
+      const trimmed = editTitleInput.trim();
+      const overrides = await StorageService.getHeadingOverrides(currentFilePath);
+      if (trimmed) {
+        overrides[editingHeading.id] = trimmed;
+        await StorageService.saveHeadingOverrides(currentFilePath, overrides);
+        setHeadings(prev => prev.map(h => h.id === editingHeading.id ? { ...h, title: trimmed } : h));
+        setEditingHeading(null);
+        ToastAndroid.show('Heading title updated!', ToastAndroid.SHORT);
+      } else {
+        // Clearing the field removes the override and reverts to the detected/recognized title.
+        delete overrides[editingHeading.id];
+        await StorageService.saveHeadingOverrides(currentFilePath, overrides);
+        setEditingHeading(null);
+        const items = await IndexService.scanHeadings(currentFilePath);
+        setHeadings(items);
+        ToastAndroid.show('Reverted to detected title.', ToastAndroid.SHORT);
+      }
+    } catch (e) {
+      ToastAndroid.show('Failed to save title', ToastAndroid.SHORT);
+    }
+  };
+
+
 
   // True while an insert is running — disables the Insert button so rapid taps can't kick off
   // a second concurrent insert (which would duplicate content). insertingRef guards re-entry
@@ -122,6 +177,8 @@ export default function App() {
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [confirmTitle, setConfirmTitle] = useState('');
   const [confirmDescription, setConfirmDescription] = useState('');
+  const [confirmConfirmLabel, setConfirmConfirmLabel] = useState('Confirm');
+  const [confirmCancelLabel, setConfirmCancelLabel] = useState('Cancel');
   const [onConfirmCallback, setOnConfirmCallback] = useState<{ fn: () => void } | null>(null);
 
   // A plugin button press (e.g. the reader's selection-popup "Clip" entry) fires
@@ -152,6 +209,7 @@ export default function App() {
     StorageService.getCombineInserted().then(setCombineInserted);
     StorageService.getShowSourceInClipper().then(setShowSourceInClipper);
     StorageService.getInsertSourceLink().then(setInsertSourceLink);
+    StorageService.getEnableToc().then(setEnableToc);
 
     // Check active file context (Note vs Document)
     const runContextCheck = async () => {
@@ -214,6 +272,15 @@ export default function App() {
           const filePath = fileRes.result;
           setCurrentFilePath(filePath);
           setIsNoteFile(!isDocFile(filePath));
+
+          // Restore the last-built ToC snapshot so the ToC tab shows its state (count + last
+          // updated time) without re-scanning the note on open.
+          StorageService.getTocState(filePath).then(state => {
+            if (state) {
+              setHeadings(state.headings);
+              setTocUpdatedAt(state.updatedAt);
+            }
+          });
 
           let pageNum = 0;
           const pageRes = await PluginCommAPI.getCurrentPageNum();
@@ -509,6 +576,8 @@ export default function App() {
         setConfirmDescription(
           `The original document "${element.articleName || clip.articleName}" has been deleted. Would you like to remove the source link from this clipping? (The highlight text will be kept).`
         );
+        setConfirmConfirmLabel('Remove Link');
+        setConfirmCancelLabel('Keep Link');
         setOnConfirmCallback({
           fn: async () => {
             await ClipService.removeLinkFromElement(clip.id, elementIndex);
@@ -1365,6 +1434,49 @@ export default function App() {
     }
   };
 
+  // Handlers for Table of Contents & Keyword Index
+
+  // Build/refresh the ToC on the page the reader is currently on. generateTocPage guards against
+  // overwriting: it writes only to a verified-empty current page (inserting a blank first if the
+  // current page has content), so nothing is ever written over existing notes.
+  const runTocBuild = async () => {
+    if (!currentFilePath) {
+      ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
+      return;
+    }
+    setTocPhase('scanning');
+    setIsGeneratingToc(true);
+    try {
+      const res = await IndexService.generateTocPage(currentFilePath, insertFontSize, setTocPhase);
+
+      if (res.success) {
+        // The ToC now lives in the note — clear the Clipper snapshot so the ToC tab doesn't keep
+        // showing a stale headings list next time Clipper opens.
+        await StorageService.clearTocState(currentFilePath);
+        setHeadings([]);
+        setTocUpdatedAt(null);
+        ToastAndroid.show(res.message || 'Table of Contents created!', ToastAndroid.LONG);
+        PluginManager.closePluginView();
+      } else if (res.needsBlankPage) {
+        // Blocking dialog (easy-to-miss toast won't do): the page isn't blank. OK-only.
+        setConfirmTitle('Page is not blank!');
+        setConfirmDescription(res.message || 'Open or add a blank page, then tap Build ToC.');
+        setConfirmConfirmLabel('OK');
+        setConfirmCancelLabel('');
+        setOnConfirmCallback({ fn: () => setShowConfirmDialog(false) });
+        setShowConfirmDialog(true);
+      } else {
+        ToastAndroid.show(res.message || 'Failed to generate ToC page', ToastAndroid.LONG);
+      }
+    } catch (e: any) {
+      ToastAndroid.show('Failed to generate ToC page', ToastAndroid.LONG);
+    } finally {
+      setIsGeneratingToc(false);
+    }
+  };
+
+  const handleBuildToc = () => { runTocBuild(); };
+
   if (isCropping) {
     return (
       <View style={styles.cropRoot}>
@@ -1451,10 +1563,6 @@ export default function App() {
             </View>
             <Text style={styles.title}>Clipper</Text>
             <View style={styles.headerIcons}>
-              {/* Region capture is done from the reader: highlight text → the "Clip"
-                  entry in the selection popup. That path screenshots the live reader
-                  page (crisp, correct for EPUB); an in-Clipper button cannot (the
-                  reader isn't on screen) so it was removed. */}
               <Pressable onPress={toggleSearch} style={styles.iconButton} testID="search-btn">
                 <Image source={require('../assets/icon/search.png')} style={styles.iconImage} />
               </Pressable>
@@ -1466,99 +1574,170 @@ export default function App() {
               </Pressable>
             </View>
           </View>
-          <View style={styles.headerSubtitleRow}>
-            <Text style={styles.subtitle}>
-              {isSelectionMode 
-                ? `${selectedIds.length} of ${processedClips.length} clip(s) selected` 
-                : `${processedClips.length} clip(s) visible`}
-            </Text>
-            {(activeSourceFilter !== null || (isSearchVisible && searchQuery.trim() !== '')) && (
-              <View style={styles.headerChips}>
-                {isSearchVisible && searchQuery.trim() !== '' && (
-                  <Pressable
-                    onPress={() => setSearchQuery('')}
-                    style={styles.headerChip}
-                  >
-                    <Text style={styles.headerChipText} numberOfLines={1}>Search: "{searchQuery}"</Text>
-                    <Image source={require('../assets/icon/clear.png')} style={styles.headerChipClearImage} />
-                  </Pressable>
-                )}
-                {activeSourceFilter !== null && (
-                  <Pressable
-                    onPress={() => setActiveSourceFilter(null)}
-                    style={styles.headerChip}
-                  >
-                    <Text style={styles.headerChipText} numberOfLines={1}>Source: {activeSourceFilter}</Text>
-                    <Image source={require('../assets/icon/clear.png')} style={styles.headerChipClearImage} />
-                  </Pressable>
-                )}
-              </View>
+        </View>
+
+        {/* Navigation Bar (Tabs) */}
+        {enableToc && (
+          <View style={styles.navTabBar}>
+            <Pressable
+              onPress={() => setActiveTab('clips')}
+              style={[styles.navTab, activeTab === 'clips' && styles.navTabActive]}
+            >
+              <Text style={[styles.navTabText, activeTab === 'clips' && styles.navTabTextActive]}>
+                📋 Clips ({clips.length})
+              </Text>
+            </Pressable>
+            {enableToc && (
+              <Pressable
+                onPress={() => setActiveTab('toc')}
+                style={[styles.navTab, activeTab === 'toc' && styles.navTabActive]}
+              >
+                <Text style={[styles.navTabText, activeTab === 'toc' && styles.navTabTextActive]}>
+                  📖 ToC ({headings.length})
+                </Text>
+              </Pressable>
             )}
           </View>
-        </View>
-
-        {/* Toggleable Search Bar */}
-        {isSearchVisible && (
-          <SearchBar
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            onClear={() => setSearchQuery('')}
-          />
         )}
 
-        {/* Scrollable list of clippings */}
-        <ClipList
-          data={processedClips}
-          totalCount={clips.length}
-          selectedIds={selectedIds}
-          isSelectionMode={isSelectionMode}
-          onCardPress={handleCardPress}
-          onCardLongPress={handleCardLongPress}
-          onOpenSource={handleOpenSource}
-          showSource={showSourceInClipper}
-        />
-
-        {/* Footer Actions Area */}
-        <View style={styles.footer}>
-          {!isSelectionMode ? (
-            <View style={styles.btnRow}>
-              <HighContrastButton label="Copy Visible" onPress={handleCopyAllVisible} disabled={processedClips.length === 0} />
-              {isNoteFile && (
-                <HighContrastButton label="Insert into open Note" onPress={handleInsertVisible} disabled={processedClips.length === 0 || isInserting} />
+        {/* Tab 1: Clips View */}
+        {activeTab === 'clips' && (
+          <>
+            {/* Subtitle / Status row */}
+            <View style={styles.headerSubtitleRow}>
+              <Text style={styles.subtitle}>
+                {isSelectionMode 
+                  ? `${selectedIds.length} of ${processedClips.length} clip(s) selected` 
+                  : `${processedClips.length} clip(s) visible`}
+              </Text>
+              {(activeSourceFilter !== null || (isSearchVisible && searchQuery.trim() !== '')) && (
+                <View style={styles.headerChips}>
+                  {isSearchVisible && searchQuery.trim() !== '' && (
+                    <Pressable onPress={() => setSearchQuery('')} style={styles.headerChip}>
+                      <Text style={styles.headerChipText} numberOfLines={1}>Search: "{searchQuery}"</Text>
+                      <Image source={require('../assets/icon/clear.png')} style={styles.headerChipClearImage} />
+                    </Pressable>
+                  )}
+                  {activeSourceFilter !== null && (
+                    <Pressable onPress={() => setActiveSourceFilter(null)} style={styles.headerChip}>
+                      <Text style={styles.headerChipText} numberOfLines={1}>Source: {activeSourceFilter}</Text>
+                      <Image source={require('../assets/icon/clear.png')} style={styles.headerChipClearImage} />
+                    </Pressable>
+                  )}
+                </View>
               )}
-              <HighContrastButton label="Clear All" onPress={handleClearAll} disabled={clips.length === 0} />
             </View>
-          ) : (
-            <>
-              {isNoteFile ? (
-                <>
-                  <View style={styles.btnRow}>
-                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={!selectionHasText} />
-                    <HighContrastButton label="Insert into open Note" onPress={handleInsertSelected} disabled={isInserting} />
-                    <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
-                  </View>
-                  <View style={styles.btnRow}>
-                    <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
-                    <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
-                    <HighContrastButton label="Cancel" onPress={handleCancel} />
-                  </View>
-                </>
+
+            {/* Toggleable Search Bar */}
+            {isSearchVisible && (
+              <SearchBar
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                onClear={() => setSearchQuery('')}
+              />
+            )}
+
+            {/* Scrollable list of clippings */}
+            <ClipList
+              data={processedClips}
+              totalCount={clips.length}
+              selectedIds={selectedIds}
+              isSelectionMode={isSelectionMode}
+              onCardPress={handleCardPress}
+              onCardLongPress={handleCardLongPress}
+              onOpenSource={handleOpenSource}
+              showSource={showSourceInClipper}
+            />
+
+            {/* Footer Actions Area */}
+            <View style={styles.footer}>
+              {!isSelectionMode ? (
+                <View style={styles.btnRow}>
+                  <HighContrastButton label="Copy Visible" onPress={handleCopyAllVisible} disabled={processedClips.length === 0} />
+                  {isNoteFile && (
+                    <HighContrastButton label="Insert into open Note" onPress={handleInsertVisible} disabled={processedClips.length === 0 || isInserting} />
+                  )}
+                  <HighContrastButton label="Clear All" onPress={handleClearAll} disabled={clips.length === 0} />
+                </View>
               ) : (
                 <>
-                  <View style={styles.btnRow}>
-                    <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={!selectionHasText} />
-                    <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
-                    <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
-                  </View>
-                  <View style={styles.btnRow}>
-                    <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
-                    <HighContrastButton label="Cancel" onPress={handleCancel} />
-                  </View>
+                  {isNoteFile ? (
+                    <>
+                      <View style={styles.btnRow}>
+                        <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={!selectionHasText} />
+                        <HighContrastButton label="Insert into open Note" onPress={handleInsertSelected} disabled={isInserting} />
+                        <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
+                      </View>
+                      <View style={styles.btnRow}>
+                        <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
+                        <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
+                        <HighContrastButton label="Cancel" onPress={handleCancel} />
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      <View style={styles.btnRow}>
+                        <HighContrastButton label="Copy Selected" onPress={handleCopySelected} disabled={!selectionHasText} />
+                        <HighContrastButton label="Merge Selected" onPress={handleMergeSelected} disabled={!canMerge} />
+                        <HighContrastButton label="Delete Selected" onPress={handleDeleteSelected} />
+                      </View>
+                      <View style={styles.btnRow}>
+                        <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
+                        <HighContrastButton label="Cancel" onPress={handleCancel} />
+                      </View>
+                    </>
+                  )}
                 </>
               )}
-            </>
-          )}
-        </View>
+            </View>
+          </>
+        )}
+
+        {/* Tab 2: Table of Contents View */}
+        {enableToc && activeTab === 'toc' && (
+          <View style={styles.tabViewContainer}>
+            <Text style={styles.subtitle}>
+              {tocUpdatedAt
+                ? `${headings.length} heading(s) found. The ToC is created on the page you're viewing — open a blank page first (it won't overwrite notes).`
+                : 'Open the note to a blank page where you want the ToC, then tap "Build ToC". It writes on the current page and never overwrites existing notes.'}
+            </Text>
+
+            <ScrollView style={{ flex: 1, marginVertical: 12 }}>
+              {headings.length === 0 ? (
+                <Text style={{ textAlign: 'center', marginVertical: 32, fontSize: 16, color: '#666' }}>
+                  {tocUpdatedAt
+                    ? 'No headings detected. Add titles/headings in your note, then tap Update ToC.'
+                    : 'No Table of Contents yet. Tap "Build ToC" below to scan this note for titles/headings.'}
+                </Text>
+              ) : (
+                headings.map((h, idx) => (
+                  <View key={h.id || idx} style={styles.tocCard}>
+                    <Text style={styles.tocTitle}>{`${idx + 1}. ${h.title}`}</Text>
+                    <Text style={styles.tocPage}>Page {h.page}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Pressable
+                        onPress={() => handleOpenEditHeadingModal(h)}
+                        style={styles.editButton}
+                      >
+                        <Text style={styles.editButtonText}>✏️ Edit</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+
+            <View style={styles.footer}>
+              <View style={styles.btnRow}>
+                <HighContrastButton
+                  label="📖 Build ToC on current page"
+                  onPress={handleBuildToc}
+                  disabled={!isNoteFile || isGeneratingToc}
+                />
+              </View>
+            </View>
+          </View>
+        )}
 
         <Text style={styles.buildLabel}>{BUILD_LABEL}</Text>
       </View>
@@ -1609,6 +1788,11 @@ export default function App() {
             setInsertFontSize(size);
             StorageService.setInsertFontSize(size);
           }}
+          enableToc={enableToc}
+          onEnableTocChange={(value) => {
+            setEnableToc(value);
+            StorageService.setEnableToc(value);
+          }}
           onResetToDefault={() => {
             // Restore every setting to its application default.
             setAutoRemoveInserted(true); StorageService.setAutoRemoveInserted(true);
@@ -1616,23 +1800,91 @@ export default function App() {
             setInsertFontSize(DEFAULT_INSERT_FONT_SIZE); StorageService.setInsertFontSize(DEFAULT_INSERT_FONT_SIZE);
             setShowSourceInClipper(true); StorageService.setShowSourceInClipper(true);
             setInsertSourceLink(true); StorageService.setInsertSourceLink(true);
+            setEnableToc(false); StorageService.setEnableToc(false);
             ToastAndroid.show('Settings reset to default.', ToastAndroid.SHORT);
           }}
           onClose={() => setIsSettingsOpen(false)}
         />
       )}
-      {/* Confirmation Dialog for Broken Links */}
+      {/* Shared confirmation dialog (broken links, ToC blank-page prompt, …) */}
       <ConfirmationDialog
         visible={showConfirmDialog}
         title={confirmTitle}
         description={confirmDescription}
-        confirmLabel="Remove Link"
-        cancelLabel="Keep Link"
+        confirmLabel={confirmConfirmLabel}
+        cancelLabel={confirmCancelLabel}
         onConfirm={() => {
           onConfirmCallback?.fn();
         }}
         onCancel={() => setShowConfirmDialog(false)}
       />
+
+      {/* Modal for Editing Heading Title */}
+      {editingHeading && (
+        <Modal
+          transparent
+          animationType="none"
+          statusBarTranslucent
+          visible={!!editingHeading}
+          onRequestClose={() => setEditingHeading(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Edit Heading Title (Page {editingHeading.page})</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editTitleInput}
+                onChangeText={setEditTitleInput}
+                placeholder="Enter title name..."
+                placeholderTextColor="#666666"
+                autoFocus
+                selectTextOnFocus
+              />
+              <View style={styles.modalBtnRow}>
+                <Pressable
+                  style={[styles.modalBtn, styles.modalBtnClear]}
+                  onPress={() => setEditTitleInput('')}
+                >
+                  <Text style={styles.modalBtnCancelText}>🗑 Clear</Text>
+                </Pressable>
+                <View style={{ flexDirection: 'row', gap: 12 }}>
+                  <Pressable
+                    style={[styles.modalBtn, styles.modalBtnCancel]}
+                    onPress={() => setEditingHeading(null)}
+                  >
+                    <Text style={styles.modalBtnCancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.modalBtn, styles.modalBtnSave]}
+                    onPress={handleSaveHeadingTitle}
+                  >
+                    <Text style={styles.modalBtnSaveText}>Save</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* Progress dialog shown while the ToC is being scanned + written */}
+      {isGeneratingToc && (
+        <Modal transparent animationType="none" statusBarTranslucent visible={isGeneratingToc}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <ActivityIndicator size="large" color="#000000" style={{ marginBottom: 12 }} />
+              <Text style={[styles.modalTitle, { marginBottom: 0, textAlign: 'center' }]}>
+                {tocPhase === 'recognizing' ? 'Recognizing handwriting…' : 'Scanning headings…'}
+              </Text>
+              <Text style={{ textAlign: 'center', color: '#666', marginTop: 6 }}>
+                {tocPhase === 'recognizing'
+                  ? 'Converting handwritten titles to text — this may take some time.'
+                  : 'Reading the note’s titles.'}
+              </Text>
+            </View>
+          </View>
+        </Modal>
+      )}
     </SafeAreaView>
   );
 }
@@ -1753,5 +2005,130 @@ const styles = StyleSheet.create({
     color: '#666666',
     textAlign: 'right',
     marginTop: 6,
+  },
+  navTabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 2,
+    borderColor: '#000000',
+    backgroundColor: '#f5f5f5',
+    marginBottom: 8,
+  },
+  navTab: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRightWidth: 1,
+    borderColor: '#cccccc',
+  },
+  navTabActive: {
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 3,
+    borderBottomColor: '#000000',
+  },
+  navTabText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#666666',
+  },
+  navTabTextActive: {
+    color: '#000000',
+  },
+  tabViewContainer: {
+    flex: 1,
+    paddingVertical: 4,
+  },
+  tocCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#000000',
+    backgroundColor: '#ffffff',
+    marginBottom: 8,
+  },
+  tocTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000000',
+    flex: 1,
+  },
+  tocPage: {
+    fontSize: 14,
+    color: '#666666',
+    marginRight: 12,
+  },
+  editButton: {
+    borderWidth: 1,
+    borderColor: '#000000',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#ffffff',
+  },
+  editButtonText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 480,
+    backgroundColor: '#ffffff',
+    borderWidth: 2,
+    borderColor: '#000000',
+    borderRadius: 8,
+    padding: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#000000',
+    marginBottom: 12,
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderColor: '#000000',
+    borderRadius: 4,
+    padding: 10,
+    fontSize: 16,
+    color: '#000000',
+    backgroundColor: '#ffffff',
+    marginBottom: 16,
+  },
+  modalBtnRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  modalBtnClear: {
+    backgroundColor: '#f5f5f5',
+  },
+  modalBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#000000',
+  },
+  modalBtnCancel: {
+    backgroundColor: '#f5f5f5',
+  },
+  modalBtnCancelText: {
+    color: '#000000',
+    fontWeight: 'bold',
+  },
+  modalBtnSave: {
+    backgroundColor: '#000000',
+  },
+  modalBtnSaveText: {
+    color: '#ffffff',
+    fontWeight: 'bold',
   },
 });
