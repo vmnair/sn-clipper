@@ -582,7 +582,7 @@ export class IndexService {
       // (never overwrite). We do NOT auto-insert a page — programmatic page insertion
       // corrupts the page shown in the viewer, so the user adds a blank page themselves.
       const NOT_BLANK_MSG =
-        'This page is not blank. The Table of Contents is written on the current page and never overwrites your notes — open or add a blank page, then tap Build ToC.';
+        'The Table of Contents is written on the current page and never overwrites your notes, open or add a blank page, then tap Build ToC.';
 
       const startPage = await readCurrentPage();
       if (startPage < 0) {
