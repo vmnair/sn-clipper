@@ -80,6 +80,7 @@ into a note → **settings** to tune insertion.
 - 🏷️ **Show source & jump in Clipper** *(default: on)* — shows/hides the source file label and the jump icon on cards.
 - 🔗 **Link source when inserting** *(default: on)* — toggles appending of back-links into notes.
 - 🔠 **Inserted text size** — **Small / Medium / Large**.
+- 📄 **Table of contents** - Ability to add table of contents any where in the note based on hand written or text based headings. 
 - 🔄 **Reset to default** — quickly restore all default settings.
 
 ---
