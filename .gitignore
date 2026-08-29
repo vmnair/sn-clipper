@@ -75,10 +75,12 @@ yarn-error.log
 !.yarn/versions
 
 # Local symlink and unused iOS platforms
-plan
 ios/
 
 .agents/
 CLAUDE.md
 
 
+
+# Design/dev instance working docs (local only)
+design_instance/
