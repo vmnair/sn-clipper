@@ -28,6 +28,7 @@ import { SearchBar } from './components/SearchBar';
 import { FilterPopover } from './components/FilterPopover';
 import { SettingsPopover } from './components/SettingsPopover';
 import { IndexService, HeadingItem } from './services/IndexService';
+import { PermissionService, FILE_READ, FILE_WRITE } from './services/PermissionService';
 import { ClipList } from './components/ClipList';
 import { deriveArticleName, isDocFile } from './utils/paths';
 import { splitTextToFit, countWrappedLines, measureWrappedText } from './utils/text';
@@ -221,6 +222,72 @@ export default function App() {
           await ClipService.setLaunchMode('normal');
           const { BackHandler } = require('react-native');
           BackHandler.exitApp();
+          return;
+        }
+
+        // Fallback for the background Clip button (index.js, showType:0): the host could not
+        // show its permission dialog without a foreground UI, so index.js opened Clipper in
+        // 'permission' mode. Re-request here — where there IS a UI — and, once granted,
+        // finish the clip the user asked for. Mirrors the index.js word-count routing.
+        if (launchMode === 'permission') {
+          await ClipService.setLaunchMode('normal');
+          setIsCropping(false);
+          setContextResolved(true);
+
+          const outcome = await PermissionService.ensure(
+            FILE_READ,
+            'Clipper needs read access to capture the text you selected.',
+          );
+          if (outcome !== 'granted') {
+            ToastAndroid.show(
+              outcome === 'blocked'
+                ? PermissionService.blockedMessage('Clipping')
+                : 'Clipper needs permission to clip',
+              ToastAndroid.LONG,
+            );
+            PluginManager.closePluginView();
+            return;
+          }
+
+          const selRes = await PluginDocAPI.getLastSelectedText() as any;
+          const selected = (selRes && selRes.success && selRes.result) ? selRes.result : '';
+          if (!selected || selected.trim().length === 0) {
+            ToastAndroid.show('Nothing selected to clip.', ToastAndroid.SHORT);
+            PluginManager.closePluginView();
+            return;
+          }
+
+          let articleName = 'Unknown Document';
+          let documentPath: string | undefined;
+          let documentPage: number | undefined;
+          try {
+            const fRes = await PluginCommAPI.getCurrentFilePath();
+            if (fRes.success && fRes.result) {
+              documentPath = fRes.result;
+              articleName = deriveArticleName(documentPath);
+            }
+            const pRes = await PluginCommAPI.getCurrentPageNum();
+            if (pRes.success && pRes.result !== undefined && pRes.result !== null) {
+              documentPage = pRes.result;
+            }
+          } catch (metaErr) {
+            console.error('Failed to get current file metadata:', metaErr);
+          }
+
+          const words = selected.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+          if (words.length > 5) {
+            await ClipService.addClip(selected, articleName, documentPath, documentPage);
+            ToastAndroid.show('Clipped as Text!', ToastAndroid.SHORT);
+            PluginManager.closePluginView();
+          } else {
+            // Short selection — same "text or image?" prompt the background handler uses.
+            setCurrentFilePath(documentPath ?? null);
+            if (documentPath) setIsNoteFile(!isDocFile(documentPath));
+            setCurrentPageNum(documentPage ?? 0);
+            setPromptText(selected);
+            promptActiveRef.current = true;
+            setShowPromptDialog(true);
+          }
           return;
         }
 
@@ -566,8 +633,59 @@ export default function App() {
     PluginManager.closePluginView();
   };
 
+  // -------------------------------------------------------------
+  // Permission gates (host plugin permission system)
+  // -------------------------------------------------------------
+  // Gate at the user-action level, not per API call: one prompt per thing the user asked
+  // for. Grants are never cached — "allow this time only" is revoked when the plugin exits,
+  // so every action re-checks (hasPermission is cheap).
+
+  /** Returns true when the action may proceed; otherwise the user has already been told why not. */
+  const ensurePermissions = async (
+    action: string,
+    requests: Array<{ permission: string; desc: string }>,
+  ): Promise<boolean> => {
+    const outcome = await PermissionService.ensureAll(requests);
+    if (outcome === 'granted') return true;
+
+    if (outcome === 'blocked') {
+      // "Don't allow" — re-requesting only produces a go-to-Settings dialog, so say so in a
+      // blocking dialog rather than a toast the user can miss.
+      setConfirmTitle('File access needed');
+      setConfirmDescription(PermissionService.blockedMessage(action));
+      setConfirmConfirmLabel('OK');
+      setConfirmCancelLabel('');
+      setOnConfirmCallback({ fn: () => setShowConfirmDialog(false) });
+      setShowConfirmDialog(true);
+    } else {
+      // Dismissed, or the dialog could not be shown — retrying is worthwhile.
+      ToastAndroid.show(`${action} needs file access — tap again to allow.`, ToastAndroid.LONG);
+    }
+    return false;
+  };
+
+  /**
+   * Turn a 1501/1503/1500/1502/1217 failure into a clear message. Returns true when the error
+   * was a permission problem (and has been reported), false for ordinary failures so callers
+   * can fall back to their own error text.
+   */
+  const reportPermissionError = (e: any): boolean => {
+    const msg = PermissionService.messageForError(e);
+    if (!msg) return false;
+    ToastAndroid.show(msg, ToastAndroid.LONG);
+    return true;
+  };
+
   const handleOpenSource = async (clip: ClipItem, element: ClipSubElement, elementIndex: number) => {
     if (!element.documentPath) return;
+
+    // Jump-to-Source stats the source file in shared storage and re-opens it in the reader —
+    // both are FILE:READ operations under the host permission system.
+    const allowed = await ensurePermissions('Opening the source document', [
+      { permission: FILE_READ, desc: 'Clipper needs read access to reopen the document this clip came from.' },
+    ]);
+    if (!allowed) return;
+
     try {
       const { FileUtils, PluginCommAPI } = require('sn-plugin-lib');
       const exists = await FileUtils.exists(element.documentPath);
@@ -610,7 +728,9 @@ export default function App() {
       await NativeModules.ImageCropModule.openFileDirectly(element.documentPath, element.documentPage ?? 0);
       PluginManager.closePluginView();
     } catch (err: any) {
-      ToastAndroid.show(`Failed to open source document: ${err.message}`, ToastAndroid.SHORT);
+      if (!reportPermissionError(err)) {
+        ToastAndroid.show(`Failed to open source document: ${err.message}`, ToastAndroid.SHORT);
+      }
     }
   };
 
@@ -632,6 +752,18 @@ export default function App() {
       ToastAndroid.show('No active document to crop.', ToastAndroid.SHORT);
       return;
     }
+
+    // Rendering the page to crop from (generateNotePng / generateCurrentDocImage, plus
+    // getPageSize) reads the user's document, so gate on FILE:READ. The crop itself and the
+    // saved PNG live in the plugin's private dir, which is exempt.
+    const allowed = await ensurePermissions('Region capture', [
+      { permission: FILE_READ, desc: 'Clipper needs read access to render the page you are cropping.' },
+    ]);
+    if (!allowed) {
+      setIsCropping(false);
+      return;
+    }
+
     setIsCropping(true);
     setCropLoading(true);
 
@@ -684,8 +816,11 @@ export default function App() {
       }
 
       let success = false;
+      // Keep the failing response around: a permission failure carries code 1503 and deserves
+      // a different message from a genuine render failure.
+      let genRes: any = null;
       if (isNote) {
-        const genRes = await PluginFileAPI.generateNotePng({
+        genRes = await PluginFileAPI.generateNotePng({
           notePath: file,
           page: pg,
           times: 1,
@@ -694,11 +829,16 @@ export default function App() {
         });
         success = genRes && genRes.success;
       } else {
-        const genRes = await PluginDocAPI.generateDocImage(
-          file,
+        // sn-plugin-lib 0.1.65 replaced generateDocImage(docPath, page, pngPath, size) with
+        // generateCurrentDocImage(page, pngPath, size, type) — it always renders the CURRENTLY
+        // open document, which is exactly what the crop flow captures. type 0 = plain page
+        // (type 1 bakes in text-selection highlight/underline styling, which we don't want in
+        // a cropped region).
+        genRes = await PluginDocAPI.generateCurrentDocImage(
           pg,
           tempPath,
-          pageSize
+          { width: Math.round(pageSize.width), height: Math.round(pageSize.height) },
+          0
         );
         success = genRes && genRes.success;
       }
@@ -708,12 +848,16 @@ export default function App() {
         setCropImageSize(pageSize);
         setCropLoading(false);
       } else {
-        ToastAndroid.show('Capture failed: Failed to screenshot page.', ToastAndroid.SHORT);
+        if (!reportPermissionError(genRes)) {
+          ToastAndroid.show('Capture failed: Failed to screenshot page.', ToastAndroid.SHORT);
+        }
         setIsCropping(false);
         setCropLoading(false);
       }
     } catch (err: any) {
-      ToastAndroid.show(`Capture error: ${err.message}`, ToastAndroid.SHORT);
+      if (!reportPermissionError(err)) {
+        ToastAndroid.show(`Capture error: ${err.message}`, ToastAndroid.SHORT);
+      }
       setIsCropping(false);
       setCropLoading(false);
     }
@@ -836,8 +980,23 @@ export default function App() {
   const runInsertClips = async (clipsToInsert: ClipItem[]) => {
     if (clipsToInsert.length === 0) return;
     if (insertingRef.current) return; // ignore re-entrant taps while an insert is in progress
+    // Claim the guard BEFORE the first await: the permission gate below is async, and two
+    // quick taps would otherwise both get past this check and insert twice.
     insertingRef.current = true;
     setIsInserting(true);
+
+    // Insert reads the page layout (getElements/getPageSize) before it writes, so it needs
+    // READ then WRITE. Ask for both up front — discovering the missing WRITE half-way through
+    // would leave the note partly written.
+    const allowed = await ensurePermissions('Inserting clips', [
+      { permission: FILE_READ, desc: 'Clipper needs read access to lay out clips on the current note page.' },
+      { permission: FILE_WRITE, desc: 'Clipper needs write access to insert clips into your note.' },
+    ]);
+    if (!allowed) {
+      insertingRef.current = false;
+      setIsInserting(false);
+      return;
+    }
     try {
       const { PluginCommAPI, PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
       
@@ -1427,14 +1586,18 @@ export default function App() {
         PluginManager.closePluginView();
       }
     } catch (e: any) {
-      ToastAndroid.show(`Insert failed: ${e.message}`, ToastAndroid.SHORT);
+      // A grant can expire mid-insert ("allow this time only" dies with the session), which
+      // surfaces as 1501/1503 rather than a generic failure — say so, so retrying is obvious.
+      if (!reportPermissionError(e)) {
+        ToastAndroid.show(`Insert failed: ${e.message}`, ToastAndroid.SHORT);
+      }
     } finally {
       insertingRef.current = false;
       setIsInserting(false);
     }
   };
 
-  // Handlers for Table of Contents & Keyword Index
+  // Handlers for Table of Contents
 
   // Build/refresh the ToC on the page the reader is currently on. generateTocPage guards against
   // overwriting: it writes only to a verified-empty current page (inserting a blank first if the
@@ -1444,6 +1607,15 @@ export default function App() {
       ToastAndroid.show('No active note file open', ToastAndroid.SHORT);
       return;
     }
+
+    // Building a ToC scans every page (getElements/getTitles/getPageSize/recognizeElements)
+    // and then writes the ToC page (insertText/insertTextLink/replaceElements/deleteElements).
+    const allowed = await ensurePermissions('Building the Table of Contents', [
+      { permission: FILE_READ, desc: 'Clipper needs read access to scan this note for headings.' },
+      { permission: FILE_WRITE, desc: 'Clipper needs write access to write the Table of Contents page.' },
+    ]);
+    if (!allowed) return;
+
     setTocPhase('scanning');
     setIsGeneratingToc(true);
     try {
@@ -1469,7 +1641,9 @@ export default function App() {
         ToastAndroid.show(res.message || 'Failed to generate ToC page', ToastAndroid.LONG);
       }
     } catch (e: any) {
-      ToastAndroid.show('Failed to generate ToC page', ToastAndroid.LONG);
+      if (!reportPermissionError(e)) {
+        ToastAndroid.show('Failed to generate ToC page', ToastAndroid.LONG);
+      }
     } finally {
       setIsGeneratingToc(false);
     }

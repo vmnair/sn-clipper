@@ -190,7 +190,7 @@ export class StorageService {
   /**
    * Save the clipper launch mode.
    */
-  static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped'): Promise<void> {
+  static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission'): Promise<void> {
     try {
       await AsyncStorage.setItem('clipper_launch_mode', mode);
       const { NativeModules } = require('react-native');
@@ -206,7 +206,7 @@ export class StorageService {
   /**
    * Retrieve the clipper launch mode from the durable store.
    */
-  static async getLaunchMode(): Promise<'normal' | 'crop' | 'prompt' | 'autoclipped'> {
+  static async getLaunchMode(): Promise<'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission'> {
     try {
       const mode = await AsyncStorage.getItem('clipper_launch_mode');
       return (mode as any) || 'normal';

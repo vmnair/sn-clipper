@@ -1,6 +1,6 @@
 {
   "name": "SnClipper",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "description": "Collect, aggregate and manage text highlights from e-books and PDFs. Paste compiled text into your notes and digests.",
@@ -15,7 +15,7 @@
     "@react-native-async-storage/async-storage": "1.24.0",
     "react": "19.0.0",
     "react-native": "0.79.2",
-    "sn-plugin-lib": "^0.1.43"
+    "sn-plugin-lib": "^0.1.65"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

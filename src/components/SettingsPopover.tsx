@@ -100,7 +100,7 @@ export function SettingsPopover({
         >
           <View style={styles.popoverLabelBlock}>
             <Text style={styles.popoverRowLabel}>Enable Table of Contents (ToC)</Text>
-            <Text style={styles.popoverRowHint}>ToC tab &amp; Page 1 note generator</Text>
+            <Text style={styles.popoverRowHint}>ToC tab &amp; note generator</Text>
           </View>
           <Badge selected={enableToc} />
         </Pressable>

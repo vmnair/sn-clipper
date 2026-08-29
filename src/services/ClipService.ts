@@ -454,11 +454,11 @@ export class ClipService {
     this.listeners.forEach(l => l());
   }
 
-  static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped'): Promise<void> {
+  static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission'): Promise<void> {
     await StorageService.setLaunchMode(mode as any);
   }
 
-  static async getLaunchMode(): Promise<'normal' | 'crop' | 'prompt' | 'autoclipped'> {
+  static async getLaunchMode(): Promise<'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission'> {
     return await StorageService.getLaunchMode() as any;
   }
 

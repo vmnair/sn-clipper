@@ -2,9 +2,13 @@
   "name": "Clipper",
   "desc": "Collect, aggregate and manage text highlights from e-books and PDFs. Paste compiled text into your notes and digests.",
   "iconPath": "assets/icon/icon.png",
-  "versionName": "0.1.9",
-  "versionCode": "285",
+  "versionName": "0.2.0",
+  "versionCode": "288",
   "pluginID": "yz6g3rirgcavgon9",
   "pluginKey": "SnClipper",
-  "jsMainPath": "index"
+  "jsMainPath": "index",
+  "uses-permissions": [
+    "plugin.permission.FILE:READ",
+    "plugin.permission.FILE:WRITE"
+  ]
 }

@@ -7,6 +7,7 @@ import {name as appName} from './app.json';
 import {PluginManager, PluginDocAPI, PluginCommAPI} from 'sn-plugin-lib';
 import {ClipService} from './src/services/ClipService';
 import {deriveArticleName} from './src/utils/paths';
+import {PermissionService, FILE_READ} from './src/services/PermissionService';
 
 // Initialize Supernote Plugin framework first
 PluginManager.init();
@@ -45,7 +46,47 @@ PluginManager.registerButtonListener({
   async onButtonPress(event) {
     if (event.id === 300) {
       try {
+        // Reading the reader's selection is a FILE:READ operation under the host permission
+        // system. Gate it here, before the first API call, so a missing grant produces
+        // guidance instead of a silent no-op (getLastSelectedText would fail with 1503).
+        const outcome = await PermissionService.ensure(
+          FILE_READ,
+          'Clipper needs read access to capture the text you selected.',
+        );
+
+        if (outcome === 'blocked') {
+          ToastAndroid.show(
+            'Clipper: allow file access in Settings → Apps → Plugins → Clipper → Permissions',
+            ToastAndroid.LONG,
+          );
+          return;
+        }
+
+        if (outcome === 'unavailable') {
+          // The host could not show its dialog from this background (showType:0) press.
+          // Fall back to the foreground: open Clipper in 'permission' launch mode, which
+          // re-requests with a UI attached and completes the clip from there.
+          await ClipService.setLaunchMode('permission');
+          await PluginManager.showPluginView();
+          return;
+        }
+
+        if (outcome === 'denied') {
+          // Dialog was shown and dismissed — the next press prompts again.
+          ToastAndroid.show('Clipper needs permission to clip', ToastAndroid.SHORT);
+          return;
+        }
+
         const response = await PluginDocAPI.getLastSelectedText();
+        // Defense in depth: an "allow this time only" grant dies with the plugin session, so
+        // a read can still come back 1503 after the gate above said granted.
+        if (response && response.success === false && PermissionService.isPermissionError(response)) {
+          ToastAndroid.show(
+            PermissionService.messageForError(response) || 'Clipper needs permission to clip',
+            ToastAndroid.LONG,
+          );
+          return;
+        }
         if (response.success && response.result) {
           const selectedText = response.result;
           // Collapse wrap newlines/whitespace before counting so a short phrase that merely
@@ -85,6 +126,10 @@ PluginManager.registerButtonListener({
         }
       } catch (err) {
         console.error('Error in button 300 handler:', err);
+        const permMsg = PermissionService.messageForError(err);
+        if (permMsg) {
+          ToastAndroid.show(permMsg, ToastAndroid.LONG);
+        }
       }
     }
   },

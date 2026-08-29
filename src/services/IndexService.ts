@@ -612,7 +612,9 @@ export class IndexService {
           await PluginCommAPI.reloadFile();
           const rem = await readPage(startPage);
           if (rem.length > 0) {
-            await PluginFileAPI.deleteElements(notePath, startPage, rem.map((e: any, i: number) => (typeof e?.numInPage === 'number' ? e.numInPage : i)));
+            // numInPage is 1-based as of sn-plugin-lib 0.1.65 (deleteElements now rejects 0),
+            // so the positional fallback must be i + 1, not i.
+            await PluginFileAPI.deleteElements(notePath, startPage, rem.map((e: any, i: number) => (typeof e?.numInPage === 'number' && e.numInPage >= 1 ? e.numInPage : i + 1)));
             await PluginCommAPI.reloadFile();
           }
         } catch (e) { console.warn('clear ToC error:', e); }

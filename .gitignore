@@ -79,8 +79,7 @@ ios/
 
 .agents/
 CLAUDE.md
-
-
+.claude/
 
 # Design/dev instance working docs (local only)
 design_instance/
