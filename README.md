@@ -140,7 +140,7 @@ A few things worth knowing:
   privileges, because the SDK cannot re-render reflowable EPUB at the reader's font and
   pagination. This still works on the current permission firmware. When Supernote ships an
   official screen-capture API, I plan to switch to it so no system calls are made.
-- 📐 **Images cannot be positioned individually:** figures are added just like text, starting from the upper left corner.
+- 📐 **Figure placement is automatic:** multiple figures insert in one pass and are laid out down the page, but you can't hand-pick a spot for each during insert. Reposition them afterwards with the lasso if needed.
 - 📄 **Inserting works on the current page only**: the plugin can't turn pages for you. When a
   clip is split or a figure needs its own page, Clipper inserts what fits, then asks you to turn
   to a new page and Insert again.
@@ -154,6 +154,11 @@ A few things worth knowing:
 - 🔐 Surface permission error codes in the write paths (today a revoked permission mid-flow
   fails quietly in ToC refresh and image inserts; the up-front prompts prevent this in practice).
 - ↗️ Move Jump-to-Source to the SDK's `openFile` API instead of the current native intent.
+- 🖼️ Investigate copying image clips to the system clipboard. Copy currently uses the text-only
+  clipboard API, so image clips can't be copied. Needs a native ClipData/FileProvider module,
+  and first a proof that any Supernote app can paste an image from the clipboard at all.
+  Alternative worth exploring: exposing image clips through the sticker workflow instead
+  (the plugin SDK has sticker APIs), since stickers are the native way pictures enter notes.
 
 ---
 
