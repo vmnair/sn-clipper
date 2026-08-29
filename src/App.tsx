@@ -985,13 +985,24 @@ export default function App() {
     insertingRef.current = true;
     setIsInserting(true);
 
-    // Insert reads the page layout (getElements/getPageSize) before it writes, so it needs
-    // READ then WRITE. Ask for both up front — discovering the missing WRITE half-way through
-    // would leave the note partly written.
-    const allowed = await ensurePermissions('Inserting clips', [
+    // Insert always reads the page layout (getElements/getPageSize are both FILE:READ-gated
+    // in the host), but WRITE is only needed for image clips.
+    //
+    // Verified against the host's own enforcement (HostCommImpl.checkFileWritePermission):
+    // the note-editing APIs that act on the CURRENTLY OPEN file — insertText, insertTextLink,
+    // insertImage, saveCurrentNote — carry no permission check at all. Only APIs that take a
+    // file path are gated, and the one this flow uses is modifyElements(notePath, ...), called
+    // solely to reposition an image after insertImage. So a text-only insert that asked for
+    // WRITE would prompt for a permission it never uses, and would refuse to run for anyone
+    // who denied it.
+    const needsWrite = clipsToInsert.some(clipHasImage);
+    const requests = [
       { permission: FILE_READ, desc: 'Clipper needs read access to lay out clips on the current note page.' },
-      { permission: FILE_WRITE, desc: 'Clipper needs write access to insert clips into your note.' },
-    ]);
+    ];
+    if (needsWrite) {
+      requests.push({ permission: FILE_WRITE, desc: 'Clipper needs write access to place images in your note.' });
+    }
+    const allowed = await ensurePermissions('Inserting clips', requests);
     if (!allowed) {
       insertingRef.current = false;
       setIsInserting(false);

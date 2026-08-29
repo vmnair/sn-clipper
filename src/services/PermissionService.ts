@@ -32,7 +32,7 @@ export type PermissionOutcome = 'granted' | 'denied' | 'blocked' | 'unavailable'
 // Host error codes (docs §"错误码" / error codes).
 export const ERR_NOT_DECLARED = 1500; // permission not declared in PluginConfig.json
 export const ERR_WRITE_DENIED = 1501; // write attempted without FILE:WRITE
-export const ERR_BAD_NAME = 1502; // unknown permission name
+export const ERR_BAD_NAME = 1502; // delete not requested, OR permission does not exist (host reuses 1502 for both)
 export const ERR_READ_DENIED = 1503; // read attempted without FILE:READ
 export const ERR_PATH_LOCKED = 1217; // path is encrypted/locked
 

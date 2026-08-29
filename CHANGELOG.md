@@ -62,8 +62,12 @@ Files: `src/App.tsx`
 - 'blocked' shows the existing ConfirmationDialog (OK-only) with the Settings route — a toast
   is too easy to miss for a state that will not fix itself; 'denied'/'unavailable' show a
   retry toast.
-- 1501/1503/1217 now map to "permission expired — try again"-style messages in the insert,
-  jump, capture and ToC error paths (`reportPermissionError`), instead of generic failure text.
+- Defensive 1501/1503/1217 mapping (`reportPermissionError`) added to the insert, jump,
+  capture and ToC error paths. Caveat (found 2026-08-29): the write paths do not yet surface
+  error codes to it — `IndexService` discards `replaceElements`/`deleteElements` results and
+  the image-insert path drops the code from `modifyElements` — so the mapping is effectively
+  unreachable there today. Not a live bug (the up-front gates prevent the scenario); wiring
+  the return-value checks is planned for 0.2.1.
 - Bug fixed while gating: `runInsertClips` claimed its re-entrancy guard after the new `await`,
   so two quick Insert taps could both slip through and insert twice. Guard is now claimed
   before the first await (caught by the existing "ignores a second Insert tap" test).
@@ -83,6 +87,73 @@ Files: none (verification); artifact `build/outputs/SnClipper.snplg` at 0.2.0 / 
   itself; clips/settings/images survive with all permissions denied.
 - Not exercised: the ToC *write* path (needs a note with handwritten titles) and the 1501/1503
   error mapping (no ungated call ever reached the host). Both recorded in the reports.
+
+### 2026-08-29 — ToC write path exercised on device (review item 2)
+Files: none (verification); artifact 0.2.0 / versionCode 290
+
+Run against a real 32-page note with 25 handwritten titles, permissions granted:
+
+- **First build:** produced a correct ToC page (25 entries with page numbers and jump links).
+  API tally from the host log: 53 `insertText`, 25 `insertTextLink`, 9 `recognizeElements`,
+  1 each of `saveCurrentNote` / `getPageSize` / `getNoteTotalPageNum` / `getElements` — and
+  **zero `replaceElements`/`deleteElements`**. A first-time ToC build therefore touches no
+  WRITE-gated API at all, exactly as the decompiled host predicted.
+- **Refresh:** rebuilding over the existing ToC called `replaceElements` (the WRITE-gated call)
+  and regenerated cleanly — same 25 entries, timestamp updated, no duplication or overlap.
+- Page-empty guard behaved correctly throughout: it refused a page holding a title element, and
+  only proceeded once a blank page was added.
+
+**Gap found while verifying — 1501/1503 handling is effectively unreachable as wired.** The SDK
+returns `{success: false, error: {code}}` rather than throwing, but `IndexService`'s ToC-refresh
+block discards the results of `replaceElements`/`deleteElements` and only catches thrown errors,
+and `App.tsx` checks `modifyElements`'s `success` flag while dropping the code. So a real 1501
+would be swallowed silently in both write paths. This is not a live bug — the gates request WRITE
+up front for both ToC and image-insert, so the situation should not arise — but the
+"defense in depth" is not currently in depth. Left as-is and reported rather than changed,
+since wiring return-value checks through those paths is a behavioural change beyond this review.
+
+### 2026-08-29 — Insert asks for FILE:WRITE only when it needs it (review item 1)
+Files: `src/App.tsx`, `src/services/PermissionService.ts`, `CHANGELOG.md`,
+`__tests__/PermissionService.test.ts` (new), `__tests__/App.test.tsx`
+
+Settled by decompiling the host (`jadx` on `/system_ext/app/PluginHost/PluginHost.apk`) and
+reading `HostCommImpl.checkFileWritePermission` rather than guessing from the host's UI wording:
+
+```java
+if (isPluginPrivatePath(api, path) || SecurityManager.hasPermission(pluginID, 2)) return true;
+cb.onResponse(new PluginAPIResponse(PluginAPIError.PERMISSION_NO_REQUEST_WRITE)); // 1501
+```
+
+The rule is: **APIs taking a file path are gated; APIs acting on the currently-open editor are
+not.** Verified per method — `insertText`, `insertTextLink`, `saveCurrentNote`, `reloadFile`,
+`getLastElement`, `getLastSelectedText`, `getCurrentFilePath`, `getCurrentPageNum`,
+`recognizeElements` and `generateCurrentDocImage` carry no check at all; `insertImage` has only
+an encryption check; `getElements`/`getPageSize`/`getTitles`/`getNoteTotalPageNum` are READ;
+`modifyElements`/`replaceElements`/`deleteElements` are WRITE.
+
+- **Insert now requests WRITE only when the batch contains an image clip.** The only WRITE-gated
+  call in the flow is `modifyElements(notePath, …)`, used purely to reposition an image after
+  `insertImage`. A text-only insert was prompting for a permission it never used — and would
+  have refused to run for anyone who denied "Modify Files", losing working functionality.
+- **ToC gate unchanged (READ+WRITE).** A first-time build only inserts (ungated), but a refresh
+  calls `replaceElements`/`deleteElements`; which one applies is unknown until after the scan,
+  so asking up front stays correct.
+- **Plan §6 Q7 answered:** `reloadFile` is not gated at all — neither READ nor WRITE.
+- **Why note region-capture works on READ alone:** `generateNotePng` checks READ on the note path
+  and WRITE on the output PNG path, but the PNG goes to the plugin private dir, which
+  `isPluginPrivatePath` exempts.
+- Corrected the `ERR_BAD_NAME` comment: the host reuses **1502** for both "delete permission not
+  requested" and "permission does not exist".
+- Added `__tests__/PermissionService.test.ts` (20 tests): full `ensure` outcome mapping
+  (held / 1 / 2 / 0 / -1 / throw→`unavailable`), both no-gating fall-throughs, `ensureAll`
+  short-circuiting, and error classification. Renamed a stale `generateDocImage` mock in
+  `App.test.tsx` to `generateCurrentDocImage`. Suite: 102 → **122 passing**.
+- Removed the superseded "[Unreleased] Highlights" planning block (review item 4).
+
+**Confirmed on device** (build 290, Manta A5X2 / Chauvet 2488_beta): with Read Files = Allow and
+**Modify Files = Don't Allow**, a two-clip text insert succeeded — both clips landed with their
+source back-links — and the host log shows a single `hasPermission(FILE:READ)` with no WRITE
+query, no prompt and no blocked dialog. The ToC write path was exercised too (see next entry).
 
 ### 2026-08-28 — Device findings applied: Settings path + ToC hint copy
 Files: `src/services/PermissionService.ts`, `index.js`, `src/components/SettingsPopover.tsx`
@@ -123,16 +194,6 @@ Files: `package.json`, `package-lock.json`, `src/App.tsx`, `src/services/IndexSe
   `unlockPathWithPassword`, `lockPathAccess`, and `PluginFileAPI.openFile(filePath, page)`.
   (`openFile` is a possible future replacement for the native `ImageCropModule.openFileDirectly`
   intent used by Jump-to-Source — not changed here; see session-notes.)
-
-See `design_instance/PERMISSION_UPGRADE_PLAN.md`. Highlights:
-
-- Upgrade `sn-plugin-lib` 0.1.43 → permission-API release.
-- Declare `uses-permissions` (`FILE:READ`, `FILE:WRITE`) in `PluginConfig.json`; bump to 0.2.0/286.
-- New `src/services/PermissionService.ts` (check-then-request, no grant caching).
-- Gate background clip (index.js), insert, jump-to-source, region crop, and ToC flows.
-- Handle permission error codes 1501/1503 in shared error paths.
-- Screencap (region capture) verdict on new firmware: keep, or feature-flag off pending
-  Ratta's official screen-capture API.
 
 ## 0.1.9 (versionCode 285) — baseline as of 2026-08-28
 

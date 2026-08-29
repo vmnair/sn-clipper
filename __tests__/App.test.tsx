@@ -104,7 +104,7 @@ jest.mock('sn-plugin-lib', () => ({
     generateNotePng: jest.fn().mockResolvedValue({ success: true }),
   },
   PluginDocAPI: {
-    generateDocImage: jest.fn().mockResolvedValue({ success: true }),
+    generateCurrentDocImage: jest.fn().mockResolvedValue({ success: true }),
     getLastSelectedText: jest.fn().mockResolvedValue({ success: true, result: '' }),
   },
   PluginNoteAPI: {
