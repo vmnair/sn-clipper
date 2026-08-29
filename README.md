@@ -1,7 +1,7 @@
 # 📎 Clipper
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.7-blue" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="version" />
   <img src="https://img.shields.io/badge/platform-Supernote%20(Manta)-000000" alt="platform" />
   <img src="https://img.shields.io/badge/built%20with-React%20Native-61DAFB?logo=react&logoColor=white" alt="react native" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
@@ -18,7 +18,9 @@ I built it to solve a workflow problem: adding a series of selected passages to 
 digest app, which broke focus. Clipper lets you **capture as you read** and **paste the
 aggregated result in one step**.
 
-> ⚠️ **Beta — use at your own risk. No warranty.** Tested on Manta (A5X2); not yet tested on Nomad.
+> ⚠️ **Beta — use at your own risk. No warranty.** Tested on Manta (A5X2), Chauvet 3.29.43_beta; not yet tested on Nomad.
+
+> 📌 **Firmware requirement:** Clipper v0.2.0 and later require the Supernote plugin beta firmware (Chauvet 3.29.43_beta or newer). That firmware also refuses to run older Clipper builds, so if you update your Supernote, update Clipper too.
 
 ---
 
@@ -57,7 +59,7 @@ into a note → **settings** to tune insertion.
 - 📄 **Copy.** Copy the visible or selected clips (combined text) to the system clipboard.
   *(Disabled for a figure — an image can't go on the text clipboard.)*
 - 🗑️ **Delete / Clear All.** Remove selected clips, or clear everything.
-- 🖼️ *Figures and text can be mixed.** Scaled insertion of figures in notes.
+- 🖼️ **Figures and text can be mixed.** Scaled insertion of figures in notes.
 
 ### 📝 Inserting into a note
 
@@ -68,7 +70,7 @@ into a note → **settings** to tune insertion.
   - *Combined mode*: Appends labeled links `[filename, p. N ↗]` stacked at the bottom of the text block to clearly distinguish multiple sources.
 - ✂️ **Long‑clip auto‑split.** A clip too tall for one page is split at a **sentence boundary**;
   the rest continues on the next page.
-- 🖼️ **Multiple figure's (region clips) can be inserted into a page**. Previous limitation of a one page, one image has been lifted.
+- 🖼️ **Multiple figures (region clips) can be inserted into a page.** The previous limitation of one page, one image has been lifted.
 - 📄 **Current‑page insertion.** Clipper inserts onto the page you're viewing; when more remains,
   it inserts what fits and prompts you to **turn to a new page and Insert again**.
 
@@ -92,6 +94,31 @@ into a note → **settings** to tune insertion.
 3. 📁 Copy `SnClipper.snplg` into `/Supernote/MyStyle`.
 4. ⚙️ On the device, open **Settings → My Style → Sideloading** and install/update the plugin.
 5. ✅ The plugin appears as **Clipper**.
+6. 🔐 On first use, Clipper will ask for file access (see Permissions below).
+
+---
+
+## 🔐 Permissions
+
+The Supernote plugin firmware (Chauvet 3.29.43_beta and later) includes a permission system:
+plugins must ask before reading or modifying your files. Clipper declares two permissions and
+asks for each one only when a feature needs it.
+
+| Permission | Used for |
+|---|---|
+| **Read Files** | Capturing clips, Jump-to-Source, and region capture |
+| **Modify Files** | Inserting image clips into a note, and refreshing an existing Table of Contents |
+
+A few things worth knowing:
+
+- **Text-only inserts do not need "Modify Files".** If you only clip and insert text, granting
+  Read Files is enough.
+- You can manage both permissions any time under **Settings → Apps → Plugins → Clipper →
+  Permissions** (Allow / Ask Every Time / Don't Allow). If you change a setting while Clipper
+  is open, close and reopen Clipper for it to take effect.
+- **Your data stays on your device.** Clipper requests no internet permission, makes no network
+  calls, and stores clips, images, and settings in its own private storage, which is unaffected
+  by these permission choices.
 
 ---
 
@@ -109,10 +136,11 @@ into a note → **settings** to tune insertion.
 
 ## ⚠️ Notes & Limitations
 
-- 🖼️ **Region capture** relies on capturing the live reader view via the plugin host's system
-  privileges — required because the SDK can't re‑render reflowable EPUB at the reader's
-  font/pagination. There will be a  new API for screen capture at that time, I plan to update so system calls are not made.
-- 📐 **Images can be positioned individually** figures are added just like text starting from the upper left corner.
+- 🖼️ **Region capture** works by capturing the live reader view via the plugin host's system
+  privileges, because the SDK cannot re-render reflowable EPUB at the reader's font and
+  pagination. This still works on the current permission firmware. When Supernote ships an
+  official screen-capture API, I plan to switch to it so no system calls are made.
+- 📐 **Images cannot be positioned individually:** figures are added just like text, starting from the upper left corner.
 - 📄 **Inserting works on the current page only** — the plugin can't turn pages for you. When a
   clip is split or a figure needs its own page, Clipper inserts what fits, then asks you to turn
   to a new page and Insert again.
@@ -122,8 +150,10 @@ into a note → **settings** to tune insertion.
 ## 🗺️ Roadmap
 
 - ✍️ Highlight selections in the document (clipped text isn't highlighted in place yet).
-- 📱 Testing on **Nomad** — I understand certain versions are tested on Nomad, I appreciate feedback from
-  Nomad users. I do not own a Nomad.
+- 📱 Testing on **Nomad**: I do not own a Nomad, so feedback from Nomad users is very welcome.
+- 🔐 Surface permission error codes in the write paths (today a revoked permission mid-flow
+  fails quietly in ToC refresh and image inserts; the up-front prompts prevent this in practice).
+- ↗️ Move Jump-to-Source to the SDK's `openFile` API instead of the current native intent.
 
 ---
 
