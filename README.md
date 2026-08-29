@@ -7,10 +7,10 @@
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
 </p>
 
-> **Collect text & image clips from your reading — and drop them straight into your notes.**
+> **Collect text & image clips from your reading, and drop them straight into your notes.**
 
 Clipper is a utility plugin for Supernote devices that lets you select and aggregate
-text **and image regions** from e‑books (EPUB), documents (PDF, TXT, CBZ, FB2), and notes,
+text **and image regions** from e-books (EPUB), documents (PDF, TXT, CBZ, FB2), and notes,
 collects them into a unified dashboard, and inserts them back into your note pages.
 
 I built it to solve a workflow problem: adding a series of selected passages to the Supernote
@@ -18,7 +18,7 @@ I built it to solve a workflow problem: adding a series of selected passages to 
 digest app, which broke focus. Clipper lets you **capture as you read** and **paste the
 aggregated result in one step**.
 
-> ⚠️ **Beta — use at your own risk. No warranty.** Tested on Manta (A5X2), Chauvet 3.29.43_beta; not yet tested on Nomad.
+> ⚠️ **Beta: use at your own risk. No warranty.** Tested on Manta (A5X2), Chauvet 3.29.43_beta; not yet tested on Nomad.
 
 > 📌 **Firmware requirement:** Clipper v0.2.0 and later require the Supernote plugin beta firmware (Chauvet 3.29.43_beta or newer). That firmware also refuses to run older Clipper builds, so if you update your Supernote, update Clipper too.
 
@@ -33,57 +33,57 @@ into a note → **settings** to tune insertion.
 
 - 🖍️ **Highlight → Clip (text).** Select text in a document and tap **Clip** on the selection
   toolbar. Each clip is labelled with its source file. A longer selection is saved **silently
-  as text** — no dialog, so you stay in the flow of reading.
+  as text**: no dialog, so you stay in the flow of reading.
 - 🔀 **Text vs Region prompt.** A short selection opens a prompt to pick **Clip Text** or
   **Clip Region** (a short highlight is the natural way to "mark this spot" for a figure).
 - 🖼️ **Clip Region (image).** Choose **Clip Region**, drag to frame a rectangle, and save it as
-  an image clip. It captures the **live, on‑screen reader page**, so it reproduces exactly what
-  you see — including **reflowable EPUB** at your chosen font, not just fixed‑layout PDF.
+  an image clip. It captures the **live, on-screen reader page**, so it reproduces exactly what
+  you see, including **reflowable EPUB** at your chosen font, not just fixed-layout PDF.
 - 📚 **Works across formats.** Text and region clipping from **PDF, EPUB, TXT, CBZ, FB2**, and notes.
 
 ### 🗂️ The Clipper dashboard
 
 - 📋 **Unified clip list.** Opened from the plugins sidebar ("Clipper"); text clips show a
-  snippet, region clips show a thumbnail — each labelled with its source document.
+  snippet, region clips show a thumbnail, each labelled with its source document.
 - 🔢 **Dynamic badge count.** The sidebar button shows the current count, e.g. `Clipper (5)`.
 - 🔍 **Search.** Filter by keyword (matches clip text and source name).
 - 🏷️ **Filter by source.** Show only clips from a chosen document.
 - ↗️ **Jump-to-Source.** Tap the **Jump** icon next to any clip card in the dashboard to reopen its source document (PDF, EPUB, or Note) at the exact page you clipped from.
-- ↕️ **Sort.** Newest‑first or oldest‑first.
+- ↕️ **Sort.** Newest-first or oldest-first.
 
 ### 🧰 Organizing clips (selection mode)
 
-- ✅ **Select.** Long‑press a clip to enter selection mode, then tap to select more.
+- ✅ **Select.** Long-press a clip to enter selection mode, then tap to select more.
 - 🔗 **Merge (text).** Combine two or more **text** clips into one, with their sources noted.
 - ✂️ **Unmerge.** Break a merged clip back into its individual pieces.
 - 📄 **Copy.** Copy the visible or selected clips (combined text) to the system clipboard.
-  *(Disabled for a figure — an image can't go on the text clipboard.)*
+  *(Disabled for a figure, since an image can't go on the text clipboard.)*
 - 🗑️ **Delete / Clear All.** Remove selected clips, or clear everything.
 - 🖼️ **Figures and text can be mixed.** Scaled insertion of figures in notes.
 
 ### 📝 Inserting into a note
 
 - 🧱 **Combined text block.** Text clips are inserted as **one text box**, separated by a single
-  blank line — uniform, tidy spacing (togglable; off = a separate box per clip).
+  blank line, for uniform, tidy spacing (togglable; off = a separate box per clip).
 - ↗️ **In-Note Back-Links.** Automatically appends a tappable back-link to the source page under inserted clips:
   - *Separate mode*: Pins a small `↗` inline icon to the right margin of the last text line (retaining uniform line spacing).
   - *Combined mode*: Appends labeled links `[filename, p. N ↗]` stacked at the bottom of the text block to clearly distinguish multiple sources.
-- ✂️ **Long‑clip auto‑split.** A clip too tall for one page is split at a **sentence boundary**;
+- ✂️ **Long-clip auto-split.** A clip too tall for one page is split at a **sentence boundary**;
   the rest continues on the next page.
 - 🖼️ **Multiple figures (region clips) can be inserted into a page.** The previous limitation of one page, one image has been lifted.
-- 📄 **Current‑page insertion.** Clipper inserts onto the page you're viewing; when more remains,
+- 📄 **Current-page insertion.** Clipper inserts onto the page you're viewing; when more remains,
   it inserts what fits and prompts you to **turn to a new page and Insert again**.
 
 ### ⚙️ Settings (gear icon)
 
-- 🧹 **Remove clips after inserting** *(default: on)* — delete clips once inserted, or keep them
+- 🧹 **Remove clips after inserting** *(default: on)*: delete clips once inserted, or keep them
   (e.g. to insert the same set into several notes).
-- 🧱 **Combine inserted text** *(default: off)* — one block, or a separate box per clip.
-- 🏷️ **Show source & jump in Clipper** *(default: on)* — shows/hides the source file label and the jump icon on cards.
-- 🔗 **Link source when inserting** *(default: on)* — toggles appending of back-links into notes.
-- 🔠 **Inserted text size** — **Small / Medium / Large**.
-- 📄 **Table of contents** - Ability to add table of contents any where in the note based on hand written or text based headings. 
-- 🔄 **Reset to default** — quickly restore all default settings.
+- 🧱 **Combine inserted text** *(default: off)*: one block, or a separate box per clip.
+- 🏷️ **Show source & jump in Clipper** *(default: on)*: shows/hides the source file label and the jump icon on cards.
+- 🔗 **Link source when inserting** *(default: on)*: toggles appending of back-links into notes.
+- 🔠 **Inserted text size**: **Small / Medium / Large**.
+- 📄 **Table of contents**: add a table of contents anywhere in the note, based on handwritten or text headings.
+- 🔄 **Reset to default**: quickly restore all default settings.
 
 ---
 
@@ -141,7 +141,7 @@ A few things worth knowing:
   pagination. This still works on the current permission firmware. When Supernote ships an
   official screen-capture API, I plan to switch to it so no system calls are made.
 - 📐 **Images cannot be positioned individually:** figures are added just like text, starting from the upper left corner.
-- 📄 **Inserting works on the current page only** — the plugin can't turn pages for you. When a
+- 📄 **Inserting works on the current page only**: the plugin can't turn pages for you. When a
   clip is split or a figure needs its own page, Clipper inserts what fits, then asks you to turn
   to a new page and Insert again.
 
@@ -159,4 +159,4 @@ A few things worth knowing:
 
 ## 📄 License
 
-Licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+Licensed under the **MIT License**: see the [LICENSE](LICENSE) file for details.
