@@ -93,8 +93,92 @@ describe('IndexService', () => {
     });
   });
 
+  describe('scanHeadings — hierarchical decimal numbering labels', () => {
+    it('produces plain 1., 2., 3. labels for single-style notes', async () => {
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue([
+        { title: 'First Chapter', page: 1, style: 1, Y: 100, X: 50 },
+        { title: 'Second Chapter', page: 2, style: 1, Y: 100, X: 50 },
+        { title: 'Third Chapter', page: 3, style: 1, Y: 100, X: 50 },
+      ]);
+
+      const headings = await IndexService.scanHeadings('/sdcard/Notes/Test.note');
+      expect(headings).toHaveLength(3);
+      expect(headings[0].numberLabel).toBe('1.');
+      expect(headings[1].numberLabel).toBe('2.');
+      expect(headings[2].numberLabel).toBe('3.');
+    });
+
+    it('generates multi-level decimal numbers (1., 1.1, 1.2, 2., 2.1)', async () => {
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue([
+        { title: 'Notes on Git', page: 1, style: 1, Y: 100, X: 50 },
+        { title: 'Git Merge', page: 3, style: 2, Y: 100, X: 50 },
+        { title: 'GitHub Actions Sync', page: 4, style: 2, Y: 200, X: 50 },
+        { title: 'Next chapter', page: 5, style: 1, Y: 100, X: 50 },
+        { title: 'Sub topic', page: 6, style: 2, Y: 100, X: 50 },
+      ]);
+
+      const headings = await IndexService.scanHeadings('/sdcard/Notes/Test.note');
+      expect(headings).toHaveLength(5);
+      expect(headings[0].numberLabel).toBe('1.');
+      expect(headings[1].numberLabel).toBe('1.1');
+      expect(headings[2].numberLabel).toBe('1.2');
+      expect(headings[3].numberLabel).toBe('2.');
+      expect(headings[4].numberLabel).toBe('2.1');
+    });
+
+    it('resets deeper counters when a higher-level heading appears (1., 1.1, 1.1.1, 2., 2.1)', async () => {
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue([
+        { title: 'Root 1', page: 1, style: 1, Y: 100, X: 50 },
+        { title: 'Child 1.1', page: 1, style: 2, Y: 200, X: 50 },
+        { title: 'Grandchild 1.1.1', page: 1, style: 3, Y: 300, X: 50 },
+        { title: 'Root 2', page: 2, style: 1, Y: 100, X: 50 },
+        { title: 'Child 2.1', page: 2, style: 2, Y: 200, X: 50 },
+      ]);
+
+      const headings = await IndexService.scanHeadings('/sdcard/Notes/Test.note');
+      expect(headings).toHaveLength(5);
+      expect(headings[0].numberLabel).toBe('1.');
+      expect(headings[1].numberLabel).toBe('1.1');
+      expect(headings[2].numberLabel).toBe('1.1.1');
+      expect(headings[3].numberLabel).toBe('2.');
+      expect(headings[4].numberLabel).toBe('2.1');
+      headings.forEach(h => expect(h.numberLabel).not.toContain('..'));
+    });
+
+    it('clamps level skips so deep styles under level-1 render 2.1 instead of 2..1 (Fix Round)', async () => {
+      // Style 1 (level 1), Style 2 (level 2), Style 3 (level 3), Style 4 (level 4)
+      // On Page 2, a Style 3 heading appears directly under Root 2 without any Style 2 in between
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue([
+        { title: 'Root 1', page: 1, style: 1, Y: 100, X: 50 },
+        { title: 'Child 1.1', page: 1, style: 2, Y: 200, X: 50 },
+        { title: 'Grandchild 1.1.1', page: 1, style: 3, Y: 300, X: 50 },
+        { title: 'Root 2', page: 2, style: 1, Y: 100, X: 50 },
+        { title: 'Deep Child under Root 2 (style 3 directly)', page: 2, style: 3, Y: 200, X: 50 },
+        { title: 'Deapest Child (style 4 directly)', page: 2, style: 4, Y: 300, X: 50 },
+      ]);
+
+      const headings = await IndexService.scanHeadings('/sdcard/Notes/Test.note');
+      expect(headings).toHaveLength(6);
+      expect(headings[0].numberLabel).toBe('1.');
+      expect(headings[1].numberLabel).toBe('1.1');
+      expect(headings[2].numberLabel).toBe('1.1.1');
+      expect(headings[3].numberLabel).toBe('2.');
+      // Level 3 clamped to 2 -> 2.1 (never 2..1)
+      expect(headings[4].numberLabel).toBe('2.1');
+      expect(headings[4].level).toBe(2);
+      // Level 4 clamped to 3 -> 2.1.1 (never 2..1.1)
+      expect(headings[5].numberLabel).toBe('2.1.1');
+      expect(headings[5].level).toBe(3);
+
+      // Strict assertion: NO numberLabel ever contains '..'
+      headings.forEach(h => {
+        expect(h.numberLabel).not.toContain('..');
+      });
+    });
+  });
+
   describe('generateTocPage — layout indentation and error handling', () => {
-    it('applies level-based indentation to title text insertion', async () => {
+    it('applies numberLabel prefix and level-based indentation to title text insertion', async () => {
       (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue([
         { title: 'Top Level', page: 1, style: 1, Y: 100, X: 50 },
         { title: 'Indented Sublevel', page: 2, style: 2, Y: 100, X: 50 },
@@ -109,7 +193,9 @@ describe('IndexService', () => {
       const row1 = insertTextCalls.find((c: any) => c[0].textContentFull.includes('Indented Sublevel'));
 
       expect(row0).toBeTruthy();
+      expect(row0[0].textContentFull).toMatch(/^1\.\s+Top Level/);
       expect(row1).toBeTruthy();
+      expect(row1[0].textContentFull).toMatch(/^1\.1\s+Indented Sublevel/);
       // Level 2 left margin should be greater than Level 1 left margin
       expect(row1[0].textRect.left).toBeGreaterThan(row0[0].textRect.left);
     });

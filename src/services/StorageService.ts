@@ -29,6 +29,7 @@ export interface TocHeading {
   page: number;
   style?: number;
   level?: number;
+  numberLabel?: string;
 }
 export interface TocState {
   headings: TocHeading[];

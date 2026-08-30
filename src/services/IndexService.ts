@@ -10,6 +10,7 @@ export interface HeadingItem {
   page: number; // 1-indexed page number for display
   style?: number; // Raw SDK style (1: black background, 2: gray-white, 3: gray-black, 4: shadow)
   level?: number; // Adaptive 1-indexed hierarchy level (1, 2, 3, 4)
+  numberLabel?: string; // Hierarchical decimal number label (e.g. '1.', '1.1', '1.2', '2.', '2.1')
   y?: number;
   x?: number;
 }
@@ -578,6 +579,24 @@ export class IndexService {
         h.level = encounteredStyles.indexOf(s) + 1;
       }
 
+      // Hierarchical decimal numbering (global across all ToC pages):
+      // Level 1: '1.', '2.', '3.' (with trailing dot)
+      // Deeper levels: '1.1', '1.2', '2.1', '1.1.1' (no trailing dot)
+      // Counters reset whenever a higher-level heading appears.
+      const counters: number[] = [];
+      for (const h of headings) {
+        let level = h.level || 1;
+        // Clamp level skips: a heading can never sit more than one level deeper than
+        // the structure actually present above it. Without this, a level-3 heading
+        // under a level-1 parent (no level-2 between) leaves a hole in the counter
+        // array and join('.') renders "2..1".
+        if (level > counters.length + 1) level = counters.length + 1;
+        h.level = level; // keep the indent consistent with the printed label
+        counters[level - 1] = (counters[level - 1] || 0) + 1;
+        counters.length = level; // reset all deeper counters
+        h.numberLabel = counters.join('.') + (level === 1 ? '.' : '');
+      }
+
       return headings;
     } catch (e) {
       console.error('Failed to scan headings:', e);
@@ -732,7 +751,8 @@ export class IndexService {
         const indentStep = Math.round(fontSize * 0.8); // ~28px indent per level at font 36
         const rowLeftMargin = L.leftMargin + (level - 1) * indentStep;
         const availableTitleWidth = L.titleRight - rowLeftMargin;
-        const titleText = titleWithLeader(`${idx + 1}. `, h.title, availableTitleWidth, fontSize);
+        const prefix = h.numberLabel ? `${h.numberLabel} ` : '';
+        const titleText = titleWithLeader(prefix, h.title, availableTitleWidth, fontSize);
         try {
           await PluginNoteAPI.insertText({
             textContentFull: titleText,

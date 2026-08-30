@@ -1900,7 +1900,9 @@ export default function App() {
                       h.level && h.level > 1 ? { marginLeft: (h.level - 1) * 16 } : null,
                     ]}
                   >
-                    <Text style={styles.tocTitle}>{`${idx + 1}. ${h.title}`}</Text>
+                    <Text style={styles.tocTitle}>
+                      {h.numberLabel ? `${h.numberLabel} ${h.title}` : `${idx + 1}. ${h.title}`}
+                    </Text>
                     <Text style={styles.tocPage}>Page {h.page}</Text>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                       <Pressable
