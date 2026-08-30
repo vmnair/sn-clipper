@@ -3,7 +3,19 @@
 One entry per applied change: date, files touched, what and why.
 Planned work lives in `design_instance/PERMISSION_UPGRADE_PLAN.md`; items move here when landed.
 
-## [Unreleased] — 0.2.0 (permission-system upgrade, in progress)
+## [0.3.0] - 2026-08-29
+
+### 2026-08-29 - Version 0.3.0 Feature Release
+Files: `index.js`, `src/App.tsx`, `src/services/ClipService.ts`, `src/services/IndexService.ts`, `src/services/StorageService.ts`, `assets/icon/*`, `PluginConfig.json`, `package.json`
+
+- **Item 3 (1501/1503 Error Wiring):** Checked return results of `replaceElements` and `deleteElements` in `IndexService.generateTocPage`, and `modifyElements` in `App.tsx` image insertion; routed error codes to `reportPermissionError`.
+- **Item 4 (Jump-to-Source SDK Migration):** Migrated `handleJumpToSource` from native `ImageCropModule.openFileDirectly` to official `PluginFileAPI.openFile(filePath, page)`.
+- **Item 1 (Region-Capture Toolbar Button):** Registered dedicated type 1 button (ID 101, `['DOC']`, `showType: 0`) named "Clip Region" with background screencap before opening `CropOverlay`. Added `cropActiveRef` and `waitForPendingCropShot` to eliminate cold-start AppState active race conditions.
+- **Item 6 (Icon Overhaul):** Redrew `icon.png` using a bold geometric viewfinder design with text highlight bars (Concept A) to form a unified visual sibling pair with `clip_region.png` (viewfinder + crosshair) at 160px stroke weight. Preserved original dashboard search, filter, settings, jump, and clear icons; added bold 'X' `close.png`.
+- **Item 2 (Adaptive ToC Submenus):** Implemented adaptive heading style mapping in `IndexService.scanHeadings` and level-based indentation in `generateTocPage` and in-app ToC tab.
+- **Item 5 (Sticker Route Research):** Completed SDK sticker API research and delivered findings in `design_instance/reports/sticker-route-findings.md`.
+
+## [0.2.0] - 2026-08-28 (permission-system upgrade)
 
 ### 2026-08-28 — Declare permissions + version bump (plan step 3)
 Files: `PluginConfig.json`, `package.json`

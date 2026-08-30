@@ -457,4 +457,26 @@ describe('ClipService', () => {
       });
     });
   });
+
+  describe('PendingCropShot management', () => {
+    it('should store, retrieve and clear pending crop shots', () => {
+      const shot = { path: '/tmp/test.png', width: 1404, height: 1872, ts: Date.now() };
+      ClipService.setPendingCropShot(shot);
+      expect(ClipService.getPendingCropShot()).toEqual(shot);
+
+      ClipService.clearPendingCropShot();
+      expect(ClipService.getPendingCropShot()).toBeNull();
+    });
+
+    it('should resolve waitForPendingCropShot when shot arrives', async () => {
+      ClipService.clearPendingCropShot();
+      const promise = ClipService.waitForPendingCropShot(500);
+      const shot = { path: '/tmp/async_test.png', width: 1404, height: 1872, ts: Date.now() };
+      setTimeout(() => {
+        ClipService.setPendingCropShot(shot);
+      }, 50);
+      const result = await promise;
+      expect(result).toEqual(shot);
+    });
+  });
 });

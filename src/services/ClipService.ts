@@ -5,12 +5,21 @@ import {Image} from 'react-native';
 import {PluginManager} from 'sn-plugin-lib';
 import {StorageService, ClipItem, ClipSubElement} from './StorageService';
 
+export interface PendingCropShot {
+  path: string;
+  width: number;
+  height: number;
+  ts: number;
+}
+
 export class ClipService {
   private static clips: ClipItem[] = [];
   private static listeners: (() => void)[] = [];
   private static initPromise: Promise<void> | null = null;
   private static initialized: boolean = false;
   private static idCounter: number = 0;
+  private static pendingCropShot: PendingCropShot | null = null;
+  private static pendingShotListeners: Array<(shot: PendingCropShot | null) => void> = [];
 
   /**
    * Generate a unique clip id. Combines the timestamp, a monotonic counter (guarantees
@@ -468,6 +477,53 @@ export class ClipService {
 
   static async getPromptText(): Promise<string> {
     return await StorageService.getPromptText();
+  }
+
+  static setPendingCropShot(shot: PendingCropShot | null): void {
+    this.pendingCropShot = shot;
+    for (const listener of this.pendingShotListeners) {
+      try {
+        listener(shot);
+      } catch (e) {}
+    }
+  }
+
+  static async waitForPendingCropShot(timeoutMs: number = 300): Promise<PendingCropShot | null> {
+    if (this.pendingCropShot && (Date.now() - this.pendingCropShot.ts < 60000)) {
+      return this.pendingCropShot;
+    }
+    return new Promise((resolve) => {
+      let timer: any = null;
+      const cb = (shot: PendingCropShot | null) => {
+        if (shot && (Date.now() - shot.ts < 60000)) {
+          if (timer) clearTimeout(timer);
+          this.pendingShotListeners = this.pendingShotListeners.filter((l) => l !== cb);
+          resolve(shot);
+        }
+      };
+      timer = setTimeout(() => {
+        this.pendingShotListeners = this.pendingShotListeners.filter((l) => l !== cb);
+        resolve(this.pendingCropShot);
+      }, timeoutMs);
+      if (timer && typeof timer.unref === 'function') {
+        timer.unref();
+      }
+      this.pendingShotListeners.push(cb);
+    });
+  }
+
+  static getPendingCropShot(): PendingCropShot | null {
+    return this.pendingCropShot;
+  }
+
+  static clearPendingCropShot(): void {
+    if (this.pendingCropShot && this.pendingCropShot.path) {
+      try {
+        const { FileUtils } = require('sn-plugin-lib');
+        FileUtils.deleteFile(this.pendingCropShot.path).catch(() => {});
+      } catch (e) {}
+    }
+    this.pendingCropShot = null;
   }
 
   /**

@@ -2,11 +2,16 @@
 // Vinod Nair
 
 import { StorageService } from './StorageService';
+import { PermissionService } from './PermissionService';
 
 export interface HeadingItem {
   id: string; // Stable per-title identity (survives re-scan) used to key user title overrides
   title: string;
   page: number; // 1-indexed page number for display
+  style?: number; // Raw SDK style (1: black background, 2: gray-white, 3: gray-black, 4: shadow)
+  level?: number; // Adaptive 1-indexed hierarchy level (1, 2, 3, 4)
+  y?: number;
+  x?: number;
 }
 
 export interface GenerateResult {
@@ -14,6 +19,7 @@ export interface GenerateResult {
   message?: string;
   needsBlankPage?: boolean; // page 1 has user content; caller should prompt to insert a blank page
   headings?: HeadingItem[]; // headings used to build the ToC (so the caller can persist without re-scanning)
+  error?: any;
 }
 
 const safeStringify = (obj: any): string => {
@@ -531,10 +537,15 @@ export class IndexService {
           continue;
         }
 
+        const rawStyle = typeof item.style === 'number' ? item.style : (parseInt(item.style, 10) || 1);
+
         headings.push({
           id,
           title: headingText,
           page: pageDisplay,
+          style: rawStyle,
+          y: typeof item.Y === 'number' ? item.Y : 0,
+          x: typeof item.X === 'number' ? item.X : 0,
         });
       }
 
@@ -547,7 +558,26 @@ export class IndexService {
         }
       } catch (e) {}
 
-      headings.sort((a, b) => a.page - b.page);
+      // Sort in visual reading order: page ascending, top-to-bottom (Y), left-to-right (X).
+      headings.sort((a, b) => {
+        if (a.page !== b.page) return a.page - b.page;
+        if ((a.y ?? 0) !== (b.y ?? 0)) return (a.y ?? 0) - (b.y ?? 0);
+        return (a.x ?? 0) - (b.x ?? 0);
+      });
+
+      // Adaptive style mapping by usage: rank styles in order of first appearance.
+      // The style of the first heading encountered becomes level 1; each additional distinct
+      // style becomes the next level in order of first appearance. If a note uses only 1 style,
+      // all headings stay flat at level 1.
+      const encounteredStyles: number[] = [];
+      for (const h of headings) {
+        const s = typeof h.style === 'number' && h.style > 0 ? h.style : 1;
+        if (!encounteredStyles.includes(s)) {
+          encounteredStyles.push(s);
+        }
+        h.level = encounteredStyles.indexOf(s) + 1;
+      }
+
       return headings;
     } catch (e) {
       console.error('Failed to scan headings:', e);
@@ -608,16 +638,39 @@ export class IndexService {
       if (startHasToc) {
         try {
           await PluginNoteAPI.saveCurrentNote();
-          await PluginFileAPI.replaceElements(notePath, startPage, []);
+          const repRes: any = await PluginFileAPI.replaceElements(notePath, startPage, []);
+          if (repRes && repRes.success === false && PermissionService.isPermissionError(repRes)) {
+            return {
+              success: false,
+              error: repRes.error || repRes,
+              message: PermissionService.messageForError(repRes) || 'Permission denied while clearing ToC.',
+            };
+          }
           await PluginCommAPI.reloadFile();
           const rem = await readPage(startPage);
           if (rem.length > 0) {
             // numInPage is 1-based as of sn-plugin-lib 0.1.65 (deleteElements now rejects 0),
             // so the positional fallback must be i + 1, not i.
-            await PluginFileAPI.deleteElements(notePath, startPage, rem.map((e: any, i: number) => (typeof e?.numInPage === 'number' && e.numInPage >= 1 ? e.numInPage : i + 1)));
+            const delRes: any = await PluginFileAPI.deleteElements(notePath, startPage, rem.map((e: any, i: number) => (typeof e?.numInPage === 'number' && e.numInPage >= 1 ? e.numInPage : i + 1)));
+            if (delRes && delRes.success === false && PermissionService.isPermissionError(delRes)) {
+              return {
+                success: false,
+                error: delRes.error || delRes,
+                message: PermissionService.messageForError(delRes) || 'Permission denied while deleting ToC elements.',
+              };
+            }
             await PluginCommAPI.reloadFile();
           }
-        } catch (e) { console.warn('clear ToC error:', e); }
+        } catch (e: any) {
+          if (PermissionService.isPermissionError(e)) {
+            return {
+              success: false,
+              error: e.error || e,
+              message: PermissionService.messageForError(e) || 'Permission denied while modifying ToC.',
+            };
+          }
+          console.warn('clear ToC error:', e);
+        }
       }
 
       // HARD GUARD: insertText writes to whatever page is CURRENT right now. Only write if
@@ -674,12 +727,16 @@ export class IndexService {
         const h = displayChunk[idx];
         const itemY = L.firstRowY + (idx * L.rowSpacing);
 
-        // 1. Title (truncated with an ellipsis if too long) + gap-filling dot leader — left-aligned.
-        const titleText = titleWithLeader(`${idx + 1}. `, h.title, L.titleRight - L.leftMargin, fontSize);
+        // 1. Title (truncated with an ellipsis if too long) + gap-filling dot leader — left-aligned with level indentation.
+        const level = h.level || 1;
+        const indentStep = Math.round(fontSize * 0.8); // ~28px indent per level at font 36
+        const rowLeftMargin = L.leftMargin + (level - 1) * indentStep;
+        const availableTitleWidth = L.titleRight - rowLeftMargin;
+        const titleText = titleWithLeader(`${idx + 1}. `, h.title, availableTitleWidth, fontSize);
         try {
           await PluginNoteAPI.insertText({
             textContentFull: titleText,
-            textRect: { left: L.leftMargin, top: itemY, right: L.titleRight, bottom: itemY + Math.round(fontSize * 1.3) },
+            textRect: { left: rowLeftMargin, top: itemY, right: L.titleRight, bottom: itemY + Math.round(fontSize * 1.3) },
             fontSize, textAlign: 0, textBold: 0, textItalics: 0,
             textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
           });

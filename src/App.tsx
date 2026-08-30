@@ -85,11 +85,21 @@ export default function App() {
   const [currentPageNum, setCurrentPageNum] = useState<number>(0);
 
   // Cropping States
-  const [isCropping, setIsCropping] = useState(false);
-  const [selectionText, setSelectionText] = useState<string | null>(null);
+  const [isCropping, setIsCropping] = useState<boolean>(() => {
+    const shot = ClipService.getPendingCropShot();
+    return !!shot && (Date.now() - shot.ts < 60000);
+  });
   const [cropLoading, setCropLoading] = useState(false);
-  const [cropPagePath, setCropPagePath] = useState<string | null>(null);
-  const [cropImageSize, setCropImageSize] = useState({ width: 1404, height: 1872 });
+  const [cropPagePath, setCropPagePath] = useState<string | null>(() => {
+    const shot = ClipService.getPendingCropShot();
+    return shot && (Date.now() - shot.ts < 60000) ? shot.path : null;
+  });
+  const [cropImageSize, setCropImageSize] = useState<{ width: number; height: number }>(() => {
+    const shot = ClipService.getPendingCropShot();
+    return shot && (Date.now() - shot.ts < 60000)
+      ? { width: shot.width, height: shot.height }
+      : { width: 1404, height: 1872 };
+  });
 
   // Search, Filter & Sort States
   const [searchQuery, setSearchQuery] = useState('');
@@ -182,19 +192,14 @@ export default function App() {
   const [confirmCancelLabel, setConfirmCancelLabel] = useState('Cancel');
   const [onConfirmCallback, setOnConfirmCallback] = useState<{ fn: () => void } | null>(null);
 
-  // A plugin button press (e.g. the reader's selection-popup "Clip" entry) fires
-  // while the reader page is still on screen, so we screenshot it right then. The
-  // crop flow prefers this crisp, WYSIWYG capture over generateDocImage — which is
-  // essential for reflowable EPUB, whose re-rendered pagination never matches the
-  // reader. Holds { promise, ts }; consumed once by handleStartCropping.
-  const pendingReaderShot = useRef<{ promise: Promise<any>; ts: number; path: string } | null>(null);
-  // Cached plugin dir so the button-press listener can build the shot path without
-  // an async round-trip that would delay the capture.
-  const pluginDirRef = useRef<string | null>(null);
   // True while a launch-mode 'prompt' dialog is active for this launch. Guards against a
   // follow-up context check (e.g. AppState 'active') reading the already-consumed 'normal'
   // launch mode and dismissing the just-shown prompt (the flash-then-disappear regression).
   const promptActiveRef = useRef(false);
+  // True while a launch-mode 'crop' session is active for this launch. Guards against a
+  // follow-up context check (e.g. AppState 'active') reading the already-consumed 'normal'
+  // launch mode and dismissing the active crop screen.
+  const cropActiveRef = useRef(false);
 
   useEffect(() => {
     // Sync current list from Storage on open
@@ -231,6 +236,7 @@ export default function App() {
         // finish the clip the user asked for. Mirrors the index.js word-count routing.
         if (launchMode === 'permission') {
           await ClipService.setLaunchMode('normal');
+          cropActiveRef.current = false;
           setIsCropping(false);
           setContextResolved(true);
 
@@ -293,6 +299,7 @@ export default function App() {
 
         if (launchMode === 'prompt') {
           await ClipService.setLaunchMode('normal');
+          cropActiveRef.current = false;
           setIsCropping(false);
           const text = await ClipService.getPromptText();
           if (text && text.trim().length > 0) {
@@ -321,8 +328,46 @@ export default function App() {
           return;
         }
 
-        // The 'prompt' (and 'autoclipped') modes have already returned above, so here
-        // launchMode is 'normal' or 'crop'. Clear stale prompt state — but NOT when a prompt
+        if (launchMode === 'crop') {
+          await ClipService.setLaunchMode('normal');
+          cropActiveRef.current = true;
+          setIsCropping(true);
+          setCropLoading(true);
+
+          // Await any in-flight background screenshot from index.js
+          const bgShot = await ClipService.waitForPendingCropShot(300);
+          if (bgShot && (Date.now() - bgShot.ts < 60000)) {
+            setCropPagePath(bgShot.path);
+            setCropImageSize({ width: bgShot.width, height: bgShot.height });
+            setCropLoading(false);
+          }
+
+          let filePath: string | undefined;
+          let pageNum = 0;
+          try {
+            const fileRes = await PluginCommAPI.getCurrentFilePath();
+            if (fileRes && fileRes.success && fileRes.result) {
+              filePath = fileRes.result;
+              setCurrentFilePath(filePath);
+              setIsNoteFile(!isDocFile(filePath));
+            }
+            const pageRes = await PluginCommAPI.getCurrentPageNum();
+            if (pageRes && pageRes.success && pageRes.result !== undefined && pageRes.result !== null) {
+              pageNum = pageRes.result;
+              setCurrentPageNum(pageNum);
+            }
+          } catch (e) {
+            console.warn('Metadata query in crop failed:', e);
+          }
+
+          if (!bgShot) {
+            await handleStartCropping(filePath, pageNum);
+          }
+          return;
+        }
+
+        // The 'prompt', 'permission', and 'crop' modes have already returned above, so here
+        // launchMode is 'normal'. Clear stale prompt state — but NOT when a prompt
         // is active for this launch: a follow-up check (AppState 'active') sees the already-
         // consumed 'normal' mode and would otherwise dismiss the just-shown prompt.
         if (!promptActiveRef.current) {
@@ -330,7 +375,7 @@ export default function App() {
           setPromptText('');
         }
 
-        if (launchMode !== 'crop') {
+        if (!cropActiveRef.current) {
           setIsCropping(false);
         }
 
@@ -354,17 +399,6 @@ export default function App() {
           if (pageRes.success && pageRes.result !== undefined && pageRes.result !== null) {
             pageNum = pageRes.result;
             setCurrentPageNum(pageNum);
-          }
-
-          if (launchMode === 'crop') {
-            await ClipService.setLaunchMode('normal');
-            setIsCropping(true);
-            const textRes = await PluginDocAPI.getLastSelectedText() as any;
-            if (textRes && textRes.success && textRes.result && textRes.result.trim().length > 0) {
-              setSelectionText(textRes.result);
-            } else {
-              await handleStartCropping(filePath, pageNum);
-            }
           }
         } else {
           setIsNoteFile(true); // Default to note file context
@@ -418,59 +452,30 @@ export default function App() {
       ImageCropModule.registerAsForeground().catch((err: any) => console.error(err));
     }
 
-    // Cache the plugin dir up front so the button-press listener can screenshot
-    // without an async round-trip (which would let the reader be covered first).
-    PluginManager.getPluginDirPath().then((dir: string | null | undefined) => { if (dir) pluginDirRef.current = dir; }).catch(() => {});
-
     let subscription: any = null;
     if (DeviceEventEmitter && typeof DeviceEventEmitter.addListener === 'function') {
       subscription = DeviceEventEmitter.addListener('onLaunchModeChange', (mode: string) => {
-        if (mode === 'prompt') {
+        if (mode === 'crop') {
+          cropActiveRef.current = true;
+          const bgShot = ClipService.getPendingCropShot();
+          if (bgShot && (Date.now() - bgShot.ts < 60000)) {
+            setCropPagePath(bgShot.path);
+            setCropImageSize({ width: bgShot.width, height: bgShot.height });
+            setCropLoading(false);
+            setIsCropping(true);
+          }
+          checkContext();
+        } else if (mode === 'prompt') {
           checkContext();
         }
       });
     }
-
-    // When any plugin button is pressed the reader page is still on screen, so grab
-    // a screenshot of it immediately. The crop flow (handleStartCropping) consumes
-    // this for a crisp, WYSIWYG capture instead of re-rendering via generateDocImage
-    // (which mis-paginates reflowable EPUB). Store the promise so the crop can await
-    // the capture rather than race it.
-    let btnSub: any = null;
-    try {
-      btnSub = PluginManager.registerButtonListener({
-        onButtonPress: (e: any) => {
-          // Only the reader selection "Clip" entry (id 300) fires while the reader page is
-          // still visible — that's the one worth screenshotting. The SDK dispatches every
-          // button event to every listener (and replays the last event to newly-registered
-          // listeners for ~1s), so without this guard opening Clipper (id 100) would capture
-          // the plugin UI and leave orphaned PNGs. index.js owns the id-300 clip logic.
-          if (!e || e.id !== 300) return;
-          const dir = pluginDirRef.current;
-          if (dir && ImageCropModule && typeof ImageCropModule.captureScreen === 'function') {
-            // Delete the previous unconsumed capture so presses that don't lead to a
-            // crop don't accumulate orphaned full-screen PNGs.
-            const prev = pendingReaderShot.current;
-            if (prev && prev.path) {
-              try { require('sn-plugin-lib').FileUtils.deleteFile(prev.path).catch(() => {}); } catch (e) {}
-            }
-            // Unique filename per capture: RN/Fresco caches images by URI, so a fixed
-            // path would keep showing the previously cached page after switching docs.
-            const path = `${dir}/reader_shot_${Date.now()}.png`;
-            pendingReaderShot.current = { promise: ImageCropModule.captureScreen(path), ts: Date.now(), path };
-          }
-        },
-      } as any);
-    } catch (e) { console.error('registerButtonListener failed', e); }
 
     return () => {
       unsubscribe();
       appStateSub.remove();
       if (subscription) {
         subscription.remove();
-      }
-      if (btnSub && typeof btnSub.remove === 'function') {
-        btnSub.remove();
       }
     };
   }, []);
@@ -724,8 +729,18 @@ export default function App() {
         }
       }
 
-      const { NativeModules } = require('react-native');
-      await NativeModules.ImageCropModule.openFileDirectly(element.documentPath, element.documentPage ?? 0);
+      const { PluginFileAPI } = require('sn-plugin-lib');
+      const openRes: any = await PluginFileAPI.openFile(element.documentPath, element.documentPage ?? 0);
+      if (openRes && openRes.success === false) {
+        if (PermissionService.isPermissionError(openRes)) {
+          if (!reportPermissionError(openRes)) {
+            ToastAndroid.show(`Failed to open source document: ${openRes.error?.message || 'Permission denied'}`, ToastAndroid.SHORT);
+          }
+        } else {
+          ToastAndroid.show('Could not open the source document (it may have been moved or deleted)', ToastAndroid.LONG);
+        }
+        return;
+      }
       PluginManager.closePluginView();
     } catch (err: any) {
       if (!reportPermissionError(err)) {
@@ -743,13 +758,28 @@ export default function App() {
 
   // -------------------------------------------------------------
   // Custom Page Cropping Logic & Coordinates Scaling
-  // -------------------------------------------------------------
-
   const handleStartCropping = async (targetPath?: string, targetPage?: number) => {
+    // 1. Consume the fresh reader screenshot captured in background by index.js
+    let bgShot = ClipService.getPendingCropShot();
+    if (!bgShot) {
+      bgShot = await ClipService.waitForPendingCropShot(300);
+    }
+    if (bgShot && (Date.now() - bgShot.ts < 60000)) {
+      setCropPagePath(bgShot.path);
+      setCropImageSize({ width: bgShot.width, height: bgShot.height });
+      setCropLoading(false);
+      cropActiveRef.current = true;
+      setIsCropping(true);
+      return;
+    }
+
+    // 2. Fallback: file-based render if no live screenshot is available
     const file = targetPath || currentFilePath;
     const pg = targetPage !== undefined ? targetPage : currentPageNum;
     if (!file) {
       ToastAndroid.show('No active document to crop.', ToastAndroid.SHORT);
+      cropActiveRef.current = false;
+      setIsCropping(false);
       return;
     }
 
@@ -760,34 +790,14 @@ export default function App() {
       { permission: FILE_READ, desc: 'Clipper needs read access to render the page you are cropping.' },
     ]);
     if (!allowed) {
+      cropActiveRef.current = false;
       setIsCropping(false);
       return;
     }
 
+    cropActiveRef.current = true;
     setIsCropping(true);
     setCropLoading(true);
-
-    // Prefer a fresh reader screenshot taken when the user pressed the selection
-    // "Clip" button — it's the exact, crisp page (correct font, WYSIWYG) and works
-    // for reflowable EPUB where generateDocImage mis-paginates. Falls through to the
-    // re-render path only if no recent capture is available or it fails.
-    const shot = pendingReaderShot.current;
-    pendingReaderShot.current = null;
-    if (shot) {
-      if (Date.now() - shot.ts < 30000) {
-        try {
-          const cap = await shot.promise;
-          if (cap && cap.path && cap.width && cap.height) {
-            setCropPagePath(cap.path);
-            setCropImageSize({ width: cap.width, height: cap.height });
-            setCropLoading(false);
-            return;
-          }
-        } catch (e) { /* fall through to generateDocImage */ }
-      }
-      // Shot was stale or unusable — delete the abandoned capture so it doesn't linger.
-      try { const { FileUtils } = require('sn-plugin-lib'); FileUtils.deleteFile(shot.path).catch(() => {}); } catch (e) {}
-    }
 
     // Drop any capture left over from a previous aborted session before making a new one.
     if (cropPagePath) {
@@ -800,6 +810,7 @@ export default function App() {
       const pluginDir = await PluginManager.getPluginDirPath();
       if (!pluginDir) {
         ToastAndroid.show('Storage error: Cannot access plugin folder.', ToastAndroid.SHORT);
+        cropActiveRef.current = false;
         setIsCropping(false);
         setCropLoading(false);
         return;
@@ -851,6 +862,7 @@ export default function App() {
         if (!reportPermissionError(genRes)) {
           ToastAndroid.show('Capture failed: Failed to screenshot page.', ToastAndroid.SHORT);
         }
+        cropActiveRef.current = false;
         setIsCropping(false);
         setCropLoading(false);
       }
@@ -858,6 +870,7 @@ export default function App() {
       if (!reportPermissionError(err)) {
         ToastAndroid.show(`Capture error: ${err.message}`, ToastAndroid.SHORT);
       }
+      cropActiveRef.current = false;
       setIsCropping(false);
       setCropLoading(false);
     }
@@ -907,7 +920,9 @@ export default function App() {
           currentPageNum
         );
         ToastAndroid.show(`Region cropped! (${count} clips aggregated)`, ToastAndroid.SHORT);
+        cropActiveRef.current = false;
         setIsCropping(false);
+        ClipService.clearPendingCropShot();
         // Automatically close plugin view to return back to the document
         PluginManager.closePluginView();
       } else {
@@ -919,7 +934,9 @@ export default function App() {
   };
 
   const handleCancelCropping = () => {
+    cropActiveRef.current = false;
     setIsCropping(false);
+    ClipService.clearPendingCropShot();
     // Don't leave the full-page capture (potentially sensitive document content) on disk
     // when the user abandons the crop.
     if (cropPagePath) {
@@ -929,40 +946,6 @@ export default function App() {
       );
       setCropPagePath(null);
     }
-    PluginManager.closePluginView();
-  };
-
-  const handleClipSelectionAsText = async () => {
-    if (!selectionText) return;
-    try {
-      const articleName = deriveArticleName(currentFilePath);
-      const count = await ClipService.addClip(
-        selectionText,
-        articleName,
-        currentFilePath || undefined,
-        currentPageNum
-      );
-      ToastAndroid.show(`Clipped text! (${count} clips aggregated)`, ToastAndroid.SHORT);
-      setSelectionText(null);
-      setIsCropping(false);
-      const { PluginManager } = require('sn-plugin-lib');
-      PluginManager.closePluginView();
-    } catch (err: any) {
-      ToastAndroid.show(`Clipping failed: ${err.message}`, ToastAndroid.SHORT);
-    }
-  };
-
-  const handleClipSelectionAsImage = async () => {
-    setSelectionText(null);
-    if (currentFilePath) {
-      await handleStartCropping(currentFilePath, currentPageNum);
-    }
-  };
-
-  const handleCancelSelectionModal = () => {
-    setSelectionText(null);
-    setIsCropping(false);
-    const { PluginManager } = require('sn-plugin-lib');
     PluginManager.closePluginView();
   };
 
@@ -1336,10 +1319,19 @@ export default function App() {
               picture: { ...el.picture, rect: { left: imgLeft, top, right: imgLeft + targetW, bottom: top + targetH } },
             };
             const modRes = await PluginFileAPI.modifyElements(notePath, page, [modified]) as any;
+            if (modRes && modRes.success === false && PermissionService.isPermissionError(modRes)) {
+              reportPermissionError(modRes);
+              return null;
+            }
             await PluginNoteAPI.saveCurrentNote();
             return (modRes && modRes.success) ? targetH : null;
           }
-        } catch (e) { /* best-effort: image stays centered */ }
+        } catch (e: any) {
+          if (PermissionService.isPermissionError(e)) {
+            reportPermissionError(e);
+          }
+          /* best-effort: image stays centered */
+        }
         return null;
       };
 
@@ -1649,7 +1641,11 @@ export default function App() {
         setOnConfirmCallback({ fn: () => setShowConfirmDialog(false) });
         setShowConfirmDialog(true);
       } else {
-        ToastAndroid.show(res.message || 'Failed to generate ToC page', ToastAndroid.LONG);
+        if (res.error && reportPermissionError(res.error)) {
+          // Permission error handled by reportPermissionError
+        } else {
+          ToastAndroid.show(res.message || 'Failed to generate ToC page', ToastAndroid.LONG);
+        }
       }
     } catch (e: any) {
       if (!reportPermissionError(e)) {
@@ -1672,18 +1668,6 @@ export default function App() {
           onCancel={handleCancelCropping}
           onSave={runCropSave}
         />
-
-        {selectionText !== null && (
-          <PromptDialog
-            description="You selected text. How would you like to clip this selection?"
-            imageLabel="Clip as Image"
-            textLabel="Clip as Text"
-            primaryAction="text"
-            onClipImage={handleClipSelectionAsImage}
-            onClipText={handleClipSelectionAsText}
-            onCancel={handleCancelSelectionModal}
-          />
-        )}
       </View>
     );
   }
@@ -1698,13 +1682,25 @@ export default function App() {
           primaryAction="image"
           onClipImage={async () => {
             promptActiveRef.current = false;
+            cropActiveRef.current = true;
             setShowPromptDialog(false);
+            const bgShot = ClipService.getPendingCropShot();
+            if (bgShot && (Date.now() - bgShot.ts < 60000)) {
+              setCropPagePath(bgShot.path);
+              setCropImageSize({ width: bgShot.width, height: bgShot.height });
+              setCropLoading(false);
+              setIsCropping(true);
+            } else {
+              setIsCropping(true);
+              setCropLoading(true);
+              handleStartCropping(currentFilePath || undefined, currentPageNum);
+            }
             await ClipService.setPromptText('');
-            await handleStartCropping(currentFilePath || undefined, currentPageNum);
           }}
           onClipText={async () => {
             promptActiveRef.current = false;
             setShowPromptDialog(false);
+            ClipService.clearPendingCropShot();
             await ClipService.setPromptText('');
             await ClipService.addClip(
               promptText,
@@ -1719,6 +1715,7 @@ export default function App() {
           onCancel={async () => {
             promptActiveRef.current = false;
             setShowPromptDialog(false);
+            ClipService.clearPendingCropShot();
             await ClipService.setPromptText('');
             const { PluginManager } = require('sn-plugin-lib');
             PluginManager.closePluginView();
@@ -1743,7 +1740,7 @@ export default function App() {
           <View style={styles.headerTitleRow}>
             <View style={styles.headerLeft}>
               <Pressable onPress={handleClose} style={styles.iconButton} testID="header-close-btn">
-                <Image source={require('../assets/icon/clear.png')} style={styles.iconImage} />
+                <Image source={require('../assets/icon/close.png')} style={styles.iconImage} />
               </Pressable>
             </View>
             <Text style={styles.title}>Clipper</Text>
@@ -1896,7 +1893,13 @@ export default function App() {
                 </Text>
               ) : (
                 headings.map((h, idx) => (
-                  <View key={h.id || idx} style={styles.tocCard}>
+                  <View
+                    key={h.id || idx}
+                    style={[
+                      styles.tocCard,
+                      h.level && h.level > 1 ? { marginLeft: (h.level - 1) * 16 } : null,
+                    ]}
+                  >
                     <Text style={styles.tocTitle}>{`${idx + 1}. ${h.title}`}</Text>
                     <Text style={styles.tocPage}>Page {h.page}</Text>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>

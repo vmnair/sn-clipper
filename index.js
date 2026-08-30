@@ -1,13 +1,38 @@
 // SnClipper/index.js
 // Vinod Nair
 
-import {AppRegistry, Image, ToastAndroid} from 'react-native';
+import {AppRegistry, Image, ToastAndroid, NativeModules} from 'react-native';
 import App from './src/App';
 import {name as appName} from './app.json';
 import {PluginManager, PluginDocAPI, PluginCommAPI} from 'sn-plugin-lib';
 import {ClipService} from './src/services/ClipService';
 import {deriveArticleName} from './src/utils/paths';
 import {PermissionService, FILE_READ} from './src/services/PermissionService';
+
+const { ImageCropModule } = NativeModules;
+
+async function captureReaderScreenToPending() {
+  if (ImageCropModule && typeof ImageCropModule.captureScreen === 'function') {
+    try {
+      const dir = await PluginManager.getPluginDirPath();
+      if (dir) {
+        ClipService.clearPendingCropShot();
+        const shotPath = `${dir}/reader_shot_${Date.now()}.png`;
+        const cap = await ImageCropModule.captureScreen(shotPath);
+        if (cap && cap.path && cap.width && cap.height) {
+          ClipService.setPendingCropShot({
+            path: cap.path,
+            width: cap.width,
+            height: cap.height,
+            ts: Date.now(),
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('captureReaderScreenToPending error:', e);
+    }
+  }
+}
 
 // Initialize Supernote Plugin framework first
 PluginManager.init();
@@ -38,6 +63,14 @@ PluginManager.registerButton(1, ['NOTE', 'DOC'], {
   name: 'Clipper',
   icon: Image.resolveAssetSource(require('./assets/icon/icon.png')).uri,
   showType: 1, // Launches full-screen UI (App.tsx)
+});
+
+// Register Dedicated Region-Capture Button (DOC toolbar)
+PluginManager.registerButton(1, ['DOC'], {
+  id: 101,
+  name: 'Clip Region',
+  icon: Image.resolveAssetSource(require('./assets/icon/clip_region.png')).uri,
+  showType: 0, // Executes background handler, captures screenshot before showing UI
 });
 
 
@@ -116,7 +149,8 @@ PluginManager.registerButtonListener({
             await ClipService.addClip(selectedText, articleName, documentPath, documentPage);
             ToastAndroid.show('Clipped as Text!', ToastAndroid.SHORT);
           } else {
-            // Case B: <= 5 words -> Prompt user (launches UI programmatically)
+            // Case B: <= 5 words -> Prompt user (take screenshot first while reader is still visible)
+            await captureReaderScreenToPending();
             await Promise.all([
               ClipService.setPromptText(selectedText),
               ClipService.setLaunchMode('prompt'),
@@ -126,6 +160,49 @@ PluginManager.registerButtonListener({
         }
       } catch (err) {
         console.error('Error in button 300 handler:', err);
+        const permMsg = PermissionService.messageForError(err);
+        if (permMsg) {
+          ToastAndroid.show(permMsg, ToastAndroid.LONG);
+        }
+      }
+    }
+
+    if (event.id === 101) {
+      try {
+        // Set launchMode to 'crop' immediately so concurrent UI initialization knows the intent
+        await ClipService.setLaunchMode('crop');
+
+        const outcome = await PermissionService.ensure(
+          FILE_READ,
+          'Clipper needs read access to capture the page region.',
+        );
+
+        if (outcome === 'blocked') {
+          await ClipService.setLaunchMode('normal');
+          ToastAndroid.show(
+            'Clipper: allow file access in Settings → Apps → Plugins → Clipper → Permissions',
+            ToastAndroid.LONG,
+          );
+          return;
+        }
+
+        if (outcome === 'unavailable') {
+          await captureReaderScreenToPending();
+          await PluginManager.showPluginView();
+          return;
+        }
+
+        if (outcome === 'denied') {
+          await ClipService.setLaunchMode('normal');
+          ToastAndroid.show('Clipper needs permission to capture region', ToastAndroid.SHORT);
+          return;
+        }
+
+        await captureReaderScreenToPending();
+        await PluginManager.showPluginView();
+      } catch (err) {
+        console.error('Error in button 101 handler:', err);
+        await ClipService.setLaunchMode('normal');
         const permMsg = PermissionService.messageForError(err);
         if (permMsg) {
           ToastAndroid.show(permMsg, ToastAndroid.LONG);

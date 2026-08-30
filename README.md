@@ -1,7 +1,7 @@
 # 📎 Clipper
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.3.0-blue" alt="version" />
   <img src="https://img.shields.io/badge/platform-Supernote%20(Manta)-000000" alt="platform" />
   <img src="https://img.shields.io/badge/built%20with-React%20Native-61DAFB?logo=react&logoColor=white" alt="react native" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
@@ -31,14 +31,10 @@ into a note → **settings** to tune insertion.
 
 ### ✂️ Capturing clips
 
-- 🖍️ **Highlight → Clip (text).** Select text in a document and tap **Clip** on the selection
-  toolbar. Each clip is labelled with its source file. A longer selection is saved **silently
-  as text**: no dialog, so you stay in the flow of reading.
-- 🔀 **Text vs Region prompt.** A short selection opens a prompt to pick **Clip Text** or
-  **Clip Region** (a short highlight is the natural way to "mark this spot" for a figure).
-- 🖼️ **Clip Region (image).** Choose **Clip Region**, drag to frame a rectangle, and save it as
-  an image clip. It captures the **live, on-screen reader page**, so it reproduces exactly what
-  you see, including **reflowable EPUB** at your chosen font, not just fixed-layout PDF.
+- 🖼️ **Dedicated "Clip Region" Toolbar Button (New in 0.3.0).** Tap **Clip Region** directly on the document toolbar to immediately frame and capture any diagram, figure, or section from the live reader page.
+- 🖍️ **Highlight → Clip (text).** Select text in a document and tap **Clip** on the selection toolbar. Each clip is labelled with its source file. A longer selection is saved **silently as text**: no dialog, so you stay in the flow of reading.
+- 🔀 **Text vs Region prompt.** A short selection opens a prompt to pick **Clip Text** or **Clip Region** (a short highlight is the natural way to "mark this spot" for a figure).
+- 🖼️ **WYSIWYG Image Capture.** Region capture captures the **live, on-screen reader page**, reproducing exactly what you see, including **reflowable EPUB** at your chosen font, not just fixed-layout PDF.
 - 📚 **Works across formats.** Text and region clipping from **PDF, EPUB, TXT, CBZ, FB2**, and notes.
 
 ### 🗂️ The Clipper dashboard
@@ -125,7 +121,7 @@ A few things worth knowing:
 ## 🚀 Getting Started
 
 1. **Clip while reading.** In a PDF/EPUB/text document, select text and tap **Clip**. For a
-   figure, make a short selection, choose **Clip Region**, and frame the area.
+   figure or diagram, tap the dedicated **Clip Region** button on the toolbar (or make a short selection and choose **Clip Region**), then frame the area.
 2. **Review in the dashboard.** Open the plugins menu → **Clipper** to see, search, filter,
    merge, or delete your clips.
 3. **Insert into a note.** Open a note, then in Clipper tap **Insert into open Note**. Text
@@ -151,14 +147,7 @@ A few things worth knowing:
 
 - ✍️ Highlight selections in the document (clipped text isn't highlighted in place yet).
 - 📱 Testing on **Nomad**: I do not own a Nomad, so feedback from Nomad users is very welcome.
-- 🔐 Surface permission error codes in the write paths (today a revoked permission mid-flow
-  fails quietly in ToC refresh and image inserts; the up-front prompts prevent this in practice).
-- ↗️ Move Jump-to-Source to the SDK's `openFile` API instead of the current native intent.
-- 🖼️ Investigate copying image clips to the system clipboard. Copy currently uses the text-only
-  clipboard API, so image clips can't be copied. Needs a native ClipData/FileProvider module,
-  and first a proof that any Supernote app can paste an image from the clipboard at all.
-  Alternative worth exploring: exposing image clips through the sticker workflow instead
-  (the plugin SDK has sticker APIs), since stickers are the native way pictures enter notes.
+- 🖼️ Investigate export to Supernote Sticker library (`.stk` container generation) for direct sticker re-use across notes.
 
 ---
 

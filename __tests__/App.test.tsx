@@ -102,6 +102,7 @@ jest.mock('sn-plugin-lib', () => ({
     modifyElements: jest.fn().mockResolvedValue({ success: true }),
     insertElements: jest.fn().mockResolvedValue({ success: true }),
     generateNotePng: jest.fn().mockResolvedValue({ success: true }),
+    openFile: jest.fn().mockResolvedValue({ success: true }),
   },
   PluginDocAPI: {
     generateCurrentDocImage: jest.fn().mockResolvedValue({ success: true }),
@@ -1101,6 +1102,12 @@ describe('App Component', () => {
   });
 
   it('handles custom page cropping flow successfully', async () => {
+    ClipService.setPendingCropShot({
+      path: '/tmp/test_crop.png',
+      width: 1404,
+      height: 1872,
+      ts: Date.now(),
+    });
     await ClipService.setLaunchMode('crop');
     const root = await renderApp();
 
@@ -1212,6 +1219,12 @@ describe('App Component', () => {
     }
 
     // 5. Crop cancel
+    ClipService.setPendingCropShot({
+      path: '/tmp/test_crop.png',
+      width: 1404,
+      height: 1872,
+      ts: Date.now(),
+    });
     await ClipService.setLaunchMode('crop');
     const rootCrop = await renderApp();
     await act(async () => {
@@ -1283,7 +1296,38 @@ describe('App Component', () => {
     expect(root.root.findByProps({ children: 'Clip Selection' })).toBeTruthy();
   });
 
+  it('keeps the crop overlay open when a follow-up context check runs (AppState active race)', async () => {
+    ClipService.setPendingCropShot({
+      path: '/tmp/test_crop.png',
+      width: 1404,
+      height: 1872,
+      ts: Date.now(),
+    });
+    await ClipService.setLaunchMode('crop');
+    const root = await renderApp();
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+
+    // Crop overlay is shown
+    expect(root.root.find((el) => typeof el.props.onLayout === 'function')).toBeTruthy();
+
+    // Simulate AppState 'active' firing a second context check
+    await act(async () => {
+      const cb = (globalThis as any).__appStateCb;
+      if (cb) cb('active');
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Crop overlay must still be active (not dismissed to dashboard)
+    expect(root.root.find((el) => typeof el.props.onLayout === 'function')).toBeTruthy();
+  });
+
   it('shows selection prompt modal and handles Clip as Image', async () => {
+    ClipService.setPendingCropShot({
+      path: '/tmp/test_crop.png',
+      width: 1404,
+      height: 1872,
+      ts: Date.now(),
+    });
     await ClipService.setPromptText('Short selection text');
     await ClipService.setLaunchMode('prompt');
     const root = await renderApp();
@@ -1489,15 +1533,15 @@ describe('App Component', () => {
       await jumpBtn.props.onPress({ stopPropagation: () => {} });
     });
 
-    const { NativeModules } = require('react-native');
-    expect(NativeModules.ImageCropModule.openFileDirectly).toHaveBeenCalledWith(
+    const { PluginFileAPI } = require('sn-plugin-lib');
+    expect(PluginFileAPI.openFile).toHaveBeenCalledWith(
       '/sdcard/Books/existing.pdf',
       5
     );
   });
 
-  it('does not call openFileDirectly and shows toast when clicking Jump on the already opened page', async () => {
-    const { FileUtils, PluginCommAPI } = require('sn-plugin-lib');
+  it('does not call openFile and shows toast when clicking Jump on the already opened page', async () => {
+    const { FileUtils, PluginCommAPI, PluginFileAPI } = require('sn-plugin-lib');
     FileUtils.exists.mockResolvedValue(true);
     PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/existing.pdf' });
     PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 5 });
@@ -1530,8 +1574,8 @@ describe('App Component', () => {
       await jumpBtn.props.onPress({ stopPropagation: () => {} });
     });
 
-    const { NativeModules, ToastAndroid } = require('react-native');
-    expect(NativeModules.ImageCropModule.openFileDirectly).not.toHaveBeenCalled();
+    const { ToastAndroid } = require('react-native');
+    expect(PluginFileAPI.openFile).not.toHaveBeenCalled();
     expect(ToastAndroid.show).toHaveBeenCalledWith('Already on this page.', ToastAndroid.SHORT);
 
     // Restore default mocks
@@ -1539,11 +1583,8 @@ describe('App Component', () => {
     PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 0 });
   });
 
-  it('short-circuits Jump on the same page of an EPUB file (native intent now honors the target page)', async () => {
-    // Previously epub was exempt from the "already on this page" guard as a workaround for the
-    // sticky-page bug (the reader ignored our page extra). Now that openFileDirectly sends the
-    // real `file_path`/`page` keys, epub navigates reliably and gets the same guard as PDFs.
-    const { FileUtils, PluginCommAPI } = require('sn-plugin-lib');
+  it('short-circuits Jump on the same page of an EPUB file', async () => {
+    const { FileUtils, PluginCommAPI, PluginFileAPI } = require('sn-plugin-lib');
     FileUtils.exists.mockResolvedValue(true);
     PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/existing.epub' });
     PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 5 });
@@ -1576,13 +1617,60 @@ describe('App Component', () => {
       await jumpBtn.props.onPress({ stopPropagation: () => {} });
     });
 
-    const { NativeModules, ToastAndroid } = require('react-native');
-    expect(NativeModules.ImageCropModule.openFileDirectly).not.toHaveBeenCalled();
+    const { ToastAndroid } = require('react-native');
+    expect(PluginFileAPI.openFile).not.toHaveBeenCalled();
     expect(ToastAndroid.show).toHaveBeenCalledWith('Already on this page.', ToastAndroid.SHORT);
 
     // Restore default mocks
     PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/MyNote.note' });
     PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 0 });
+  });
+
+  it('shows toast and does not close plugin view when openFile returns generic failure', async () => {
+    const { FileUtils, PluginCommAPI, PluginFileAPI, PluginManager } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Other.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 0 });
+    PluginFileAPI.openFile.mockResolvedValue({ success: false, error: { code: 100, message: 'File not found' } });
+
+    const testClips: ClipItem[] = [
+      {
+        id: 'c7',
+        text: 'Deleted file highlight',
+        elements: [{
+          type: 'text',
+          text: 'Deleted file highlight',
+          documentPath: '/sdcard/Books/deleted.pdf',
+          documentPage: 2,
+          articleName: 'deleted.pdf',
+        }],
+        articleName: 'deleted.pdf',
+        timestamp: 700,
+      },
+    ];
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const root = await renderApp();
+
+    const jumpBtn = root.root.find((el: any) => {
+      return el.type === 'Pressable' && el.props.testID === 'jump-btn';
+    });
+    expect(jumpBtn).toBeTruthy();
+
+    await act(async () => {
+      await jumpBtn.props.onPress({ stopPropagation: () => {} });
+    });
+
+    const { ToastAndroid } = require('react-native');
+    expect(PluginFileAPI.openFile).toHaveBeenCalledWith('/sdcard/Books/deleted.pdf', 2);
+    expect(ToastAndroid.show).toHaveBeenCalledWith(
+      'Could not open the source document (it may have been moved or deleted)',
+      ToastAndroid.LONG
+    );
+    expect(PluginManager.closePluginView).not.toHaveBeenCalled();
+
+    // Restore openFile mock
+    PluginFileAPI.openFile.mockResolvedValue({ success: true });
   });
 
   it('runs sweepOrphanCaptures on start and deletes stale files', async () => {

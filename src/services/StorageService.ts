@@ -27,6 +27,8 @@ export interface TocHeading {
   id: string;
   title: string;
   page: number;
+  style?: number;
+  level?: number;
 }
 export interface TocState {
   headings: TocHeading[];
