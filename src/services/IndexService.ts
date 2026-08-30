@@ -311,7 +311,6 @@ interface IndexLayout {
   titleRight: number; // right x the (truncatable) title text may occupy
   rowSpacing: number;
   headerTopY: number;
-  ruleY: number; // y of the underline rule below the heading
   subtitleY: number; // y of the subtitle line
   firstRowY: number; // y of the first entry row
   rowsPerPage: number; // entries that fit on the page (footer row reserved)
@@ -327,10 +326,9 @@ function computeIndexLayout(pageWidth: number, pageHeight: number, fontSize: num
   const pageNumLeft = linkLeft - Math.round(fontSize * 0.6) - pageNumColW;
   const titleRight = pageNumLeft - Math.round(fontSize * 0.4);
   const rowSpacing = Math.round(fontSize * 1.6); // roomier than the old *1.5
-  const headerTopY = Math.round(pageHeight * 0.09); // ~168 portrait
-  const ruleY = headerTopY + Math.round(fontSize * 1.9);
-  const subtitleY = ruleY + Math.round(fontSize * 1.1);
-  const firstRowY = subtitleY + Math.round(fontSize * 2.0);
+  const headerTopY = Math.round(pageHeight * 0.08); // ~150 portrait
+  const subtitleY = headerTopY + Math.round(fontSize * 1.6); // ~208 portrait
+  const firstRowY = subtitleY + Math.round(fontSize * 2.2); // ~287 portrait (ample clear space)
   const bottomMargin = Math.round(pageHeight * 0.05);
   const rowsPerPage = Math.max(
     8,
@@ -339,7 +337,7 @@ function computeIndexLayout(pageWidth: number, pageHeight: number, fontSize: num
   const footerY = firstRowY + rowsPerPage * rowSpacing;
   return {
     leftMargin, rightMargin, linkLeft, pageNumLeft, titleRight,
-    rowSpacing, headerTopY, ruleY, subtitleY, firstRowY, rowsPerPage, footerY,
+    rowSpacing, headerTopY, subtitleY, firstRowY, rowsPerPage, footerY,
   };
 }
 
@@ -375,11 +373,8 @@ function titleWithLeader(prefix: string, title: string, availableWidth: number, 
   return `${fitted} ${'.'.repeat(dotCount)}`;
 }
 
-/** A row of box-drawing chars spanning [leftMargin, rightMargin] for the heading rule. */
-function ruleText(leftMargin: number, rightMargin: number, fontSize: number): string {
-  const count = Math.max(1, Math.floor((rightMargin - leftMargin) / (fontSize * 0.5)));
-  return '─'.repeat(count);
-}
+
+
 
 /** Basename of a note path with the extension stripped, for the subtitle line. */
 function noteDisplayName(notePath: string): string {
@@ -719,18 +714,12 @@ export class IndexService {
       }
       const L = computeIndexLayout(pageWidth, pageHeight, fontSize);
 
-      // Heading, underline rule, and subtitle (note name + date).
+      // Heading and subtitle (note name + date) — clean typographic hierarchy.
       try {
         await PluginNoteAPI.insertText({
           textContentFull: 'TABLE OF CONTENTS',
-          textRect: { left: L.leftMargin, top: L.headerTopY, right: L.rightMargin, bottom: L.headerTopY + 70 },
+          textRect: { left: L.leftMargin, top: L.headerTopY, right: L.rightMargin, bottom: L.headerTopY + Math.round(headerFontSize * 1.3) },
           fontSize: headerFontSize, textAlign: 0, textBold: 1, textItalics: 0,
-          textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
-        });
-        await PluginNoteAPI.insertText({
-          textContentFull: ruleText(L.leftMargin, L.rightMargin, fontSize),
-          textRect: { left: L.leftMargin, top: L.ruleY, right: L.rightMargin, bottom: L.ruleY + Math.round(fontSize * 0.9) },
-          fontSize, textAlign: 0, textBold: 0, textItalics: 0,
           textFrameWidthType: 0, textFrameStyle: 0, textEditable: 1,
         });
         await PluginNoteAPI.insertText({
