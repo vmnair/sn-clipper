@@ -3,7 +3,14 @@
 One entry per applied change: date, files touched, what and why.
 Planned work lives in `design_instance/PERMISSION_UPGRADE_PLAN.md`; items move here when landed.
 
-## [0.3.0] - 2026-08-29
+## [0.3.0] - 2026-08-30
+
+### 2026-08-30 — Item 7: Region Capture in NOTE Files
+Files: `index.js`, `__tests__/App.test.tsx`
+
+- **Item 7 (Region Capture in NOTE files):** Extended dedicated "Clip Region" button (ID 101) registration from `['DOC']` to `['NOTE', 'DOC']` so region capture is accessible directly from note toolbars.
+- Verified fallback render branching in `App.tsx` routes note files to `PluginFileAPI.generateNotePng` and document files to `PluginDocAPI.generateCurrentDocImage`.
+- Added unit test coverage in `App.test.tsx` verifying fallback crop screenshot routing for both note and document contexts.
 
 ### 2026-08-29 - Version 0.3.0 Feature Release
 Files: `index.js`, `src/App.tsx`, `src/services/ClipService.ts`, `src/services/IndexService.ts`, `src/services/StorageService.ts`, `assets/icon/*`, `PluginConfig.json`, `package.json`

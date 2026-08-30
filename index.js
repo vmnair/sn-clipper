@@ -65,8 +65,8 @@ PluginManager.registerButton(1, ['NOTE', 'DOC'], {
   showType: 1, // Launches full-screen UI (App.tsx)
 });
 
-// Register Dedicated Region-Capture Button (DOC toolbar)
-PluginManager.registerButton(1, ['DOC'], {
+// Register Dedicated Region-Capture Button (NOTE & DOC toolbar)
+PluginManager.registerButton(1, ['NOTE', 'DOC'], {
   id: 101,
   name: 'Clip Region',
   icon: Image.resolveAssetSource(require('./assets/icon/clip_region.png')).uri,

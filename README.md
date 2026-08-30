@@ -31,7 +31,7 @@ into a note → **settings** to tune insertion.
 
 ### ✂️ Capturing clips
 
-- 🖼️ **Dedicated "Clip Region" Toolbar Button (New in 0.3.0).** Tap **Clip Region** directly on the document toolbar to immediately frame and capture any diagram, figure, or section from the live reader page.
+- 🖼️ **Dedicated "Clip Region" Toolbar Button (New in 0.3.0).** Tap **Clip Region** directly on the document or note toolbar to immediately frame and capture any diagram, figure, or section from the live page.
 - 🖍️ **Highlight → Clip (text).** Select text in a document and tap **Clip** on the selection toolbar. Each clip is labelled with its source file. A longer selection is saved **silently as text**: no dialog, so you stay in the flow of reading.
 - 🔀 **Text vs Region prompt.** A short selection opens a prompt to pick **Clip Text** or **Clip Region** (a short highlight is the natural way to "mark this spot" for a figure).
 - 🖼️ **WYSIWYG Image Capture.** Region capture captures the **live, on-screen reader page**, reproducing exactly what you see, including **reflowable EPUB** at your chosen font, not just fixed-layout PDF.
@@ -121,7 +121,7 @@ A few things worth knowing:
 ## 🚀 Getting Started
 
 1. **Clip while reading.** In a PDF/EPUB/text document, select text and tap **Clip**. For a
-   figure or diagram, tap the dedicated **Clip Region** button on the toolbar (or make a short selection and choose **Clip Region**), then frame the area.
+   figure or diagram in a document or note, tap the dedicated **Clip Region** button on the toolbar (or make a short selection in a document and choose **Clip Region**), then frame the area.
 2. **Review in the dashboard.** Open the plugins menu → **Clipper** to see, search, filter,
    merge, or delete your clips.
 3. **Insert into a note.** Open a note, then in Clipper tap **Insert into open Note**. Text

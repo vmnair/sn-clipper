@@ -1750,4 +1750,60 @@ describe('App Component', () => {
 
     expect(removeLinkSpy).toHaveBeenCalledWith('c3', 0);
   });
+
+  it('handles fallback cropping in a note file using generateNotePng', async () => {
+    const { PluginCommAPI, PluginFileAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Meeting.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 2 });
+    PluginFileAPI.generateNotePng.mockClear();
+
+    // No pending background crop shot (resolves null immediately)
+    ClipService.clearPendingCropShot();
+    jest.spyOn(ClipService, 'waitForPendingCropShot').mockResolvedValue(null);
+    await ClipService.setLaunchMode('crop');
+
+    const root = await renderApp();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(PluginFileAPI.generateNotePng).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notePath: '/sdcard/Notes/Meeting.note',
+        page: 2,
+        times: 1,
+        type: 1,
+      })
+    );
+
+    const workspace = root.root.find((el) => typeof el.props.onLayout === 'function');
+    expect(workspace).toBeTruthy();
+  });
+
+  it('handles fallback cropping in a doc file using generateCurrentDocImage', async () => {
+    const { PluginCommAPI, PluginDocAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/Manual.pdf' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 5 });
+    PluginDocAPI.generateCurrentDocImage.mockClear();
+
+    // No pending background crop shot (resolves null immediately)
+    ClipService.clearPendingCropShot();
+    jest.spyOn(ClipService, 'waitForPendingCropShot').mockResolvedValue(null);
+    await ClipService.setLaunchMode('crop');
+
+    const root = await renderApp();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(PluginDocAPI.generateCurrentDocImage).toHaveBeenCalledWith(
+      5,
+      expect.stringContaining('temp_crop_page_'),
+      expect.objectContaining({ width: 1404, height: 1872 }),
+      0
+    );
+
+    const workspace = root.root.find((el) => typeof el.props.onLayout === 'function');
+    expect(workspace).toBeTruthy();
+  });
 });
