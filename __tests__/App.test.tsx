@@ -622,7 +622,7 @@ describe('App Component', () => {
     // Note has 2 total pages, starting on page 0
     PluginFileAPI.getNoteTotalPageNum.mockResolvedValue({ success: true, result: 2 });
 
-    // Page 0 is full; page 1 is empty
+    // Page 0 scan: full. Page 1 scan: empty. Page 1 verify: the new text box persisted.
     PluginFileAPI.getElements
       .mockResolvedValueOnce({
         success: true,
@@ -631,6 +631,10 @@ describe('App Component', () => {
       .mockResolvedValueOnce({
         success: true,
         result: [],
+      })
+      .mockResolvedValue({
+        success: true,
+        result: [{ uuid: 'inserted', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 400 } } }],
       });
 
     await ClipService.addClip('Clip that fits on page 2', 'Doc A');
@@ -722,6 +726,34 @@ describe('App Component', () => {
     expect(clips[0].text).toContain('This is sentence number');
   });
 
+  it('keeps clips and warns when an insert did not persist in the note', async () => {
+    // Regression test: auto-remove must be gated on the inserted elements actually being in
+    // the note afterwards. insertImage in particular can report success and silently drop the
+    // element; deleting the clip on the strength of the call alone loses the content for good.
+    const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({ success: true, result: [] }) // page scan: empty page
+      .mockResolvedValue({ success: true, result: [] });    // verify: nothing new landed
+
+    await ClipService.addClip('A clip that will not persist.', 'Doc A');
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    expect(PluginNoteAPI.insertText).toHaveBeenCalledTimes(1);
+    expect(ToastAndroid.show).toHaveBeenCalledWith(
+      'Some clips could not be inserted; they are kept in Clipper.',
+      ToastAndroid.LONG
+    );
+    expect(ToastAndroid.show).not.toHaveBeenCalledWith('Clips inserted successfully!', ToastAndroid.SHORT);
+    // The clip survives, and the view stays open so the failure is visible.
+    expect(ClipService.getClipsSync().length).toBe(1);
+    expect(PluginManager.closePluginView).not.toHaveBeenCalled();
+  });
+
   it('does not corrupt a later merged-clip element with a resolved split\'s stale remainder', async () => {
     // Regression test: splitRemainder[clipId] used to only ever be *set* on a split and never
     // cleared once that element later completed via the "fits whole" path. For a merged clip
@@ -731,10 +763,19 @@ describe('App Component', () => {
     const { PluginNoteAPI, PluginFileAPI, PluginCommAPI } = require('sn-plugin-lib');
     PluginFileAPI.getNoteTotalPageNum.mockResolvedValue({ success: true, result: 2 });
 
-    // Page 0 starts empty; page 1 (after auto-turn) also starts empty.
+    // Page 0 starts empty; page 1 (after auto-turn) also starts empty. Each page is verified
+    // after its inserts, so the scan/verify calls alternate.
     PluginFileAPI.getElements
-      .mockResolvedValueOnce({ success: true, result: [] })
-      .mockResolvedValueOnce({ success: true, result: [] });
+      .mockResolvedValueOnce({ success: true, result: [] }) // page 0 scan
+      .mockResolvedValueOnce({ // page 0 verify: E1's chunk persisted
+        success: true,
+        result: [{ uuid: 'e1-chunk', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 1700 } } }],
+      })
+      .mockResolvedValueOnce({ success: true, result: [] }) // page 1 scan
+      .mockResolvedValue({ // page 1 verify: E1's remainder persisted
+        success: true,
+        result: [{ uuid: 'e1-tail', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 900 } } }],
+      });
 
     // E1: long enough that it must split on page 0, with a leftover that fits whole on a fresh
     // page 1 but leaves too little room there for E2 to be attempted at all (deferred whole).

@@ -1393,6 +1393,11 @@ export default function App() {
       const insertedCountByClip: Record<string, number> = {};
       const splitRemainder: Record<string, string> = {};
       let attemptedInserts = 0;
+      // Counts new elements that actually persisted, summed over the pages we touched. Guards
+      // auto-remove: we must NEVER delete clip content that didn't land in the note (image
+      // inserts can silently drop). Verified per page, since the page loop re-snapshots
+      // beforeIds each time it moves on.
+      let persistedNew = 0;
       let pageBudget = 20; // Bounded loop max 20 pages
       let stoppedEarlyOutOfSpace = false;
 
@@ -1431,6 +1436,7 @@ export default function App() {
 
         let currentY = 100;
         const beforeIds = new Set<string>();
+        const attemptedAtPageStart = attemptedInserts;
         let existingImageCount = 0;
 
         const elementsRes = await PluginFileAPI.getElements(currentPage, notePath) as any;
@@ -1643,6 +1649,16 @@ export default function App() {
 
         await PluginNoteAPI.saveCurrentNote();
 
+        // Count how many of this page's inserts survived the save before moving on.
+        if (attemptedInserts > attemptedAtPageStart) {
+          try {
+            const verify = await PluginFileAPI.getElements(currentPage, notePath) as any;
+            if (verify && verify.success && Array.isArray(verify.result)) {
+              persistedNew += verify.result.filter((el: any) => el.uuid && !beforeIds.has(el.uuid)).length;
+            }
+          } catch (e) { /* best-effort */ }
+        }
+
         if (i >= items.length) {
           break;
         }
@@ -1676,7 +1692,8 @@ export default function App() {
 
       await PluginNoteAPI.saveCurrentNote();
 
-      if (autoRemove && attemptedInserts > 0) {
+      const allPersisted = attemptedInserts > 0 && persistedNew >= attemptedInserts;
+      if (autoRemove && allPersisted) {
         const fullyInsertedIds: string[] = [];
         for (const c of clipsToInsert) {
           const inserted = insertedCountByClip[c.id] || 0;
@@ -1702,6 +1719,10 @@ export default function App() {
       } else if (stoppedEarlyOutOfSpace || i < items.length) {
         // Page Full modal was already acknowledged by the user; close cleanly
         PluginManager.closePluginView();
+      } else if (!allPersisted) {
+        // Something was attempted but didn't persist. Keep the clips AND the plugin view open,
+        // so the failure is visible rather than looking like a successful insert.
+        ToastAndroid.show('Some clips could not be inserted; they are kept in Clipper.', ToastAndroid.LONG);
       } else {
         ToastAndroid.show(
           autoRemove ? 'Clips inserted successfully!' : 'Clips inserted (kept in Clipper)',
