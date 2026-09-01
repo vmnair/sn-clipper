@@ -27,13 +27,12 @@ DEVICE_NAME=$(adb devices | grep -v "List" | head -n 1 | awk '{print $1}')
 # printf (not echo -e) so an unexpected device serial isn't interpreted as escapes.
 printf '%bSupernote connected: %s%b\n' "$GREEN" "$DEVICE_NAME" "$NC"
 
-# Remove previous plugin file from MyStyle folder on the device
-echo -e "${BLUE}Removing old SnClipper.snplg from Supernote/MyStyle...${NC}"
-adb shell rm -f /sdcard/MyStyle/SnClipper.snplg
-
 # Push the new plugin package
 echo -e "${BLUE}Pushing build/outputs/SnClipper.snplg to Supernote/MyStyle...${NC}"
-adb push build/outputs/SnClipper.snplg /sdcard/MyStyle/
+adb shell rm -f /sdcard/Supernote/MyStyle/SnClipper.snplg /sdcard/MyStyle/SnClipper.snplg
+adb push build/outputs/SnClipper.snplg /sdcard/Supernote/MyStyle/SnClipper.snplg
+adb push build/outputs/SnClipper.snplg /sdcard/MyStyle/SnClipper.snplg
+adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Supernote/MyStyle/SnClipper.snplg >/dev/null 2>&1 || true
 
 echo -e "${GREEN}Plugin successfully copied to device!${NC}"
 echo -e "${BLUE}On your Supernote, please open Settings -> My Style -> Sideloading and tap 'Install' or 'Update' to complete.${NC}"
