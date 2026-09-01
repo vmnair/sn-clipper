@@ -38,8 +38,11 @@ describe('PermissionService', () => {
   });
 
   describe('ensure — outcome mapping', () => {
-    it('returns granted without prompting when the permission is already held', async () => {
-      const has = jest.fn().mockResolvedValue(1);
+    it.each([
+      [1, 'allow this time only'],
+      [2, 'always allow'],
+    ])('returns granted without prompting when hasPermission returns %i (%s)', async (code) => {
+      const has = jest.fn().mockResolvedValue(code);
       const request = jest.fn();
       withPermissionApis(has, request);
 

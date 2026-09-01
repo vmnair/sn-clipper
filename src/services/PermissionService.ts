@@ -56,7 +56,8 @@ export class PermissionService {
     if (!this.isSupported()) return 'granted';
     try {
       const has = await PluginManager.hasPermission(permission);
-      if (has === 1) return 'granted';
+      // 1 = allow this time only, 2 = always allow. Both mean permission is currently held.
+      if (has === 1 || has === 2) return 'granted';
     } catch (e) {
       // hasPermission itself is unavailable/failing — treat as an unenforced host rather
       // than blocking a feature that would otherwise work.
