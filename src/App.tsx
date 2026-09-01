@@ -30,7 +30,7 @@ import { SettingsPopover } from './components/SettingsPopover';
 import { IndexService, HeadingItem } from './services/IndexService';
 import { PermissionService, FILE_READ, FILE_WRITE } from './services/PermissionService';
 import { ClipList } from './components/ClipList';
-import { deriveArticleName, isDocFile } from './utils/paths';
+import { deriveArticleName, isDocFile, isNoteFile as checkIsNoteFile } from './utils/paths';
 import { splitTextToFit, countWrappedLines, measureWrappedText } from './utils/text';
 // Bundled at build time; versionCode is auto-incremented by buildPlugin.sh before bundling.
 const pluginConfig = require('../PluginConfig.json');
@@ -191,6 +191,34 @@ export default function App() {
   const [confirmConfirmLabel, setConfirmConfirmLabel] = useState('Confirm');
   const [confirmCancelLabel, setConfirmCancelLabel] = useState('Cancel');
   const [onConfirmCallback, setOnConfirmCallback] = useState<{ fn: () => void } | null>(null);
+  const [onCancelCallback, setOnCancelCallback] = useState<{ fn: () => void } | null>(null);
+
+  const askUserConfirmation = (
+    title: string,
+    description: string,
+    confirmLabel = 'OK',
+    cancelLabel?: string,
+  ): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setConfirmTitle(title);
+      setConfirmDescription(description);
+      setConfirmConfirmLabel(confirmLabel);
+      setConfirmCancelLabel(cancelLabel || '');
+      setOnConfirmCallback({
+        fn: () => {
+          setShowConfirmDialog(false);
+          resolve(true);
+        },
+      });
+      setOnCancelCallback({
+        fn: () => {
+          setShowConfirmDialog(false);
+          resolve(false);
+        },
+      });
+      setShowConfirmDialog(true);
+    });
+  };
 
   // True while a launch-mode 'prompt' dialog is active for this launch. Guards against a
   // follow-up context check (e.g. AppState 'active') reading the already-consumed 'normal'
@@ -334,14 +362,6 @@ export default function App() {
           setIsCropping(true);
           setCropLoading(true);
 
-          // Await any in-flight background screenshot from index.js
-          const bgShot = await ClipService.waitForPendingCropShot(300);
-          if (bgShot && (Date.now() - bgShot.ts < 60000)) {
-            setCropPagePath(bgShot.path);
-            setCropImageSize({ width: bgShot.width, height: bgShot.height });
-            setCropLoading(false);
-          }
-
           let filePath: string | undefined;
           let pageNum = 0;
           try {
@@ -360,8 +380,25 @@ export default function App() {
             console.warn('Metadata query in crop failed:', e);
           }
 
+          const targetFile = filePath || currentFilePath;
+          const isNote = targetFile ? checkIsNoteFile(targetFile) : false;
+
+          let bgShot: any = null;
+          if (!isNote) {
+            // Check for background screenshot from index.js for DOC files
+            bgShot = ClipService.getPendingCropShot();
+            if (bgShot && (Date.now() - bgShot.ts < 60000)) {
+              setCropPagePath(bgShot.path);
+              setCropImageSize({ width: bgShot.width, height: bgShot.height });
+              setCropLoading(false);
+            }
+          } else {
+            ClipService.clearPendingCropShot();
+          }
+
+          setContextResolved(true);
           if (!bgShot) {
-            await handleStartCropping(filePath, pageNum);
+            await handleStartCropping(targetFile, pageNum);
           }
           return;
         }
@@ -730,6 +767,13 @@ export default function App() {
       }
 
       const { PluginFileAPI } = require('sn-plugin-lib');
+      try {
+        const encRes = await PluginFileAPI.getPathEncryptionStatus(element.documentPath) as any;
+        if (encRes && encRes.success && encRes.result === 1) {
+          ToastAndroid.show('This file is locked with a password.', ToastAndroid.LONG);
+          return;
+        }
+      } catch (e) { /* best-effort */ }
       const openRes: any = await PluginFileAPI.openFile(element.documentPath, element.documentPage ?? 0);
       if (openRes && openRes.success === false) {
         if (PermissionService.isPermissionError(openRes)) {
@@ -759,23 +803,26 @@ export default function App() {
   // -------------------------------------------------------------
   // Custom Page Cropping Logic & Coordinates Scaling
   const handleStartCropping = async (targetPath?: string, targetPage?: number) => {
-    // 1. Consume the fresh reader screenshot captured in background by index.js
-    let bgShot = ClipService.getPendingCropShot();
-    if (!bgShot) {
-      bgShot = await ClipService.waitForPendingCropShot(300);
-    }
-    if (bgShot && (Date.now() - bgShot.ts < 60000)) {
-      setCropPagePath(bgShot.path);
-      setCropImageSize({ width: bgShot.width, height: bgShot.height });
-      setCropLoading(false);
-      cropActiveRef.current = true;
-      setIsCropping(true);
-      return;
-    }
-
-    // 2. Fallback: file-based render if no live screenshot is available
     const file = targetPath || currentFilePath;
     const pg = targetPage !== undefined ? targetPage : currentPageNum;
+    const isNote = file ? checkIsNoteFile(file) : (currentFilePath ? checkIsNoteFile(currentFilePath) : false);
+
+    // 1. Consume the fresh reader screenshot captured in background by index.js ONLY for DOC files
+    if (!isNote) {
+      const bgShot = ClipService.getPendingCropShot();
+      if (bgShot && (Date.now() - bgShot.ts < 60000)) {
+        setCropPagePath(bgShot.path);
+        setCropImageSize({ width: bgShot.width, height: bgShot.height });
+        setCropLoading(false);
+        cropActiveRef.current = true;
+        setIsCropping(true);
+        return;
+      }
+    } else {
+      ClipService.clearPendingCropShot();
+    }
+
+    // 2. Primary for NOTE files (or Fallback for DOC): file-based render if no live screenshot is available
     if (!file) {
       ToastAndroid.show('No active document to crop.', ToastAndroid.SHORT);
       cropActiveRef.current = false;
@@ -806,7 +853,7 @@ export default function App() {
     }
 
     try {
-      const { PluginFileAPI, PluginDocAPI } = require('sn-plugin-lib');
+      const { PluginFileAPI, PluginDocAPI, PluginNoteAPI } = require('sn-plugin-lib');
       const pluginDir = await PluginManager.getPluginDirPath();
       if (!pluginDir) {
         ToastAndroid.show('Storage error: Cannot access plugin folder.', ToastAndroid.SHORT);
@@ -817,7 +864,6 @@ export default function App() {
       }
 
       const tempPath = `${pluginDir}/temp_crop_page_${Date.now()}.png`;
-      const isNote = file.endsWith('.note') || file.endsWith('.not') || !file.includes('.');
 
       // Fetch the page size once and reuse it for both the capture and the crop scaling.
       let pageSize = { width: 1404, height: 1872 };
@@ -831,14 +877,23 @@ export default function App() {
       // a different message from a genuine render failure.
       let genRes: any = null;
       if (isNote) {
-        genRes = await PluginFileAPI.generateNotePng({
-          notePath: file,
-          page: pg,
-          times: 1,
-          pngPath: tempPath,
-          type: 1
-        });
+        // generateLayerPreviewImage renders only the handwriting/element layer, without the
+        // page's background template (ruled lines, dot grid). generateNotePng bakes the
+        // template into the PNG regardless of its `type` param on this firmware (confirmed
+        // on-device: type:0 "transparent background" still produced ruled lines) — see
+        // design_instance/current_status.md.
+        genRes = await PluginNoteAPI.generateLayerPreviewImage(file, pg, 0, tempPath) as any;
         success = genRes && genRes.success;
+        if (!success) {
+          genRes = await PluginFileAPI.generateNotePng({
+            notePath: file,
+            page: pg,
+            times: 1,
+            pngPath: tempPath,
+            type: 0,
+          });
+          success = genRes && genRes.success;
+        }
       } else {
         // sn-plugin-lib 0.1.65 replaced generateDocImage(docPath, page, pngPath, size) with
         // generateCurrentDocImage(page, pngPath, size, type) — it always renders the CURRENTLY
@@ -1001,95 +1056,31 @@ export default function App() {
       }
       const notePath = fileRes.result;
       const pageRes = await PluginCommAPI.getCurrentPageNum();
-      const page = (pageRes.success && pageRes.result !== undefined && pageRes.result !== null) ? pageRes.result : 0;
+      let currentPage = (pageRes.success && pageRes.result !== undefined && pageRes.result !== null) ? pageRes.result : 0;
 
-      // Read settings FRESH from storage (not the in-memory state, which may not have finished
-      // its async load yet — right after a plugin update, an early insert could otherwise use
-      // the default "auto-remove ON" and delete clips against the user's saved "off").
+      let totalPages = 1;
+      try {
+        const totRes = await PluginFileAPI.getNoteTotalPageNum(notePath) as any;
+        if (totRes && totRes.success && typeof totRes.result === 'number') {
+          totalPages = totRes.result;
+        }
+      } catch (e) { /* fallback */ }
+      let currentTotalPages = Math.max(totalPages, currentPage + 1);
+
+      // Read settings FRESH from storage
       const autoRemove = await StorageService.getAutoRemoveInserted();
       const combine = await StorageService.getCombineInserted();
       const linkSource = await StorageService.getInsertSourceLink();
 
       await PluginNoteAPI.saveCurrentNote();
 
-      let pageWidth = 1404;
-      let pageHeight = 1872;
-      const sizeRes = await PluginFileAPI.getPageSize(notePath, page);
-      if (sizeRes.success && sizeRes.result) {
-        pageWidth = sizeRes.result.width;
-        pageHeight = sizeRes.result.height;
-      }
-
-      // 1. Get existing page elements to calculate starting Y coordinate (Append feature),
-      // and snapshot their ids so we can identify newly-inserted images afterwards
-      // (insertImage returns { result: true } with no uuid, so we diff before/after).
-      let currentY = 100;
-      // Layout metrics derived from the chosen insert font size. lineHeight/charsPerLine
-      // ESTIMATE how much text fits (fit/split decisions and where the next box starts).
-      // Uniform inter-clip spacing comes from combining text into ONE box separated by a
-      // blank line (see the combine branch) rather than from precise height estimates; `gap`
-      // is the blank space between separately-inserted boxes (~0.6 line).
       const fontSize = insertFontSize;
-      // Matches the note renderer's actual line pitch (measured ≈1.18·fontSize on device);
-      // an oversized value made link/icon positions drift lower with each wrapped line.
       const lineHeight = Math.round(fontSize * 1.2);
       const gap = Math.round(lineHeight * 0.6);
-      // Text boxes render their glyphs inset from the frame's left edge; images draw
-      // edge-to-edge. To line images up with text (and clear the note's left toolbar), inset the
-      // image left by this much. Scaled to the font (calibrated on Manta: font 44 → ~26px inset,
-      // ≈0.6·fontSize) so it tracks the user's font choice; may need per-device tuning (e.g. Nomad).
       const imageLeftInset = Math.round(fontSize * 0.6);
       const MIN_SPLIT_LINES = 3;
-      const beforeIds = new Set<string>();
-      // Count images already on this page (from a previous insert) so the one-figure-per-page
-      // cap accounts for them — otherwise a second figure would overlap the existing one.
-      let existingImageCount = 0;
-
-      const elementsRes = await PluginFileAPI.getElements(page, notePath) as any;
-      if (elementsRes && elementsRes.success && Array.isArray(elementsRes.result)) {
-        for (const el of elementsRes.result) {
-          if (el.uuid) beforeIds.add(el.uuid);
-          if (el.status !== undefined && el.status !== 0) {
-            continue;
-          }
-          let elBottom = 0;
-          if (el.type === 500 || el.type === 501 || el.type === 502) { // Text Box types
-            if (el.textBox && el.textBox.textRect) {
-              elBottom = el.textBox.textRect.bottom;
-            }
-          } else if (el.type === 200) { // Picture/Image type
-            existingImageCount++;
-            if (el.picture && el.picture.rect) {
-              elBottom = el.picture.rect.bottom;
-            }
-          } else if (el.type === 100) { // Title/Heading type
-            if (el.title) {
-              elBottom = el.title.Y + el.title.height;
-            }
-          } else if (el.type === 0) { // Stroke / handwriting type
-            continue; // Ignore stroke elements entirely
-          } else if (el.type === 600) { // Text-link (our ↗ jump icon) — its extent is
-            continue; // already covered by the text box it sits on; and its maxY is bogus.
-          }
-          if (elBottom <= 0 && el.maxY) {
-            // Fallback for non-stroke types that have maxY but no computed bottom
-            elBottom = el.maxY;
-          }
-          // Sanity clamp: some element types report a garbage maxY far past the page
-          // (e.g. link elements report maxY≈16224 on a 2560-tall page). Never let such a
-          // value push the start-Y off the page, which would make everything "not fit".
-          if (elBottom > currentY && elBottom <= pageHeight) {
-            currentY = elBottom;
-          }
-        }
-      }
-      // Start slightly below the bottom-most element
-      if (currentY > 100) {
-        currentY += gap;
-      }
 
       // Flatten clips into an ordered list of element "items", tagging each with its clip id
-      // so we can tell which clips were fully inserted (safe to remove) vs. deferred.
       const items: {
         clipId: string;
         type: 'text' | 'image';
@@ -1119,59 +1110,26 @@ export default function App() {
         }
       }
 
-      const maxWidth = pageWidth - 200;
-      // Approx characters per line for the chosen font (proportional font ~0.5·fontSize wide,
-      // calibrated to the device: a full line ≈78 chars at font 44 / maxWidth 1720).
-      const charsPerLine = Math.max(1, Math.floor(maxWidth / (fontSize * 0.5)));
-      // Word-wrap-aware line count (see countWrappedLines) — naive char-packing under-counts
-      // and clipped the last line of longer clips.
-      const estimateTextLines = (t: string) => countWrappedLines(t, charsPerLine);
-      // Height the text content actually occupies. Link placement and the fit/pagination
-      // checks use this; the inserted box gets a small extra pad (below) so descenders on the
-      // last line aren't clipped.
-      const estimateTextHeight = (linesCount: number) => linesCount * lineHeight;
-      const boxDescenderPad = Math.round(lineHeight * 0.35);
-      const insertTextBox = async (content: string, top: number, height: number) => {
-        await PluginNoteAPI.insertText({
-          textContentFull: content,
-          // Pad the box slightly beyond the estimated content height so the last line's
-          // descenders (and minor estimation error) are never clipped. The extra space is
-          // invisible (no frame) and links/next content are placed off the content height.
-          textRect: { left: 100, top, right: 100 + maxWidth, bottom: top + height + boxDescenderPad },
-          fontSize,
-          textAlign: 0,
-          textBold: 0,
-          textItalics: 0,
-          textFrameWidthType: 0,
-          textFrameStyle: 0,
-          textEditable: 1,
-        });
-      };
-
       const fontSizeLink = Math.round(fontSize * 0.8);
       const linkHeight = Math.round(fontSizeLink * 1.35);
       const linkSpace = linkHeight + gap;
-      const linkGap = Math.round(lineHeight * 0.2); // tight, uniform gap between text and its link
+      const linkGap = Math.round(lineHeight * 0.2);
       const JUMP_ICON = '↗';
       const iconWidth = Math.round(fontSizeLink * 1.4);
-      const charWidthPx = fontSize * 0.5; // avg glyph advance; must match the charsPerLine factor above
+      const charWidthPx = fontSize * 0.5;
 
       const { FileUtils } = require('sn-plugin-lib');
 
-      // Insert the small tappable jump icon with its right edge at the page's right margin.
-      // `topY` is the icon's top. destPath/destPage/linkType are preserved so tapping performs
-      // the same source jump as before — only the label (now just an icon) and size changed.
-      const performInsertJumpIcon = async (destPath: string, destPage: number, topY: number) => {
+      const performInsertJumpIcon = async (destPath: string, destPage: number, topY: number, rightMargin: number) => {
         const linkType = destPath.endsWith('.note') || destPath.endsWith('.not')
           ? (destPage !== undefined ? 0 : 1)
           : 2;
-        const right = 100 + maxWidth;
         await PluginNoteAPI.insertTextLink({
           destPath,
           destPage: destPage || 0,
-          style: 0, // solid underline
+          style: 0,
           linkType,
-          rect: { left: right - iconWidth, top: topY, right, bottom: topY + linkHeight },
+          rect: { left: rightMargin - iconWidth, top: topY, right: rightMargin, bottom: topY + linkHeight },
           fontSize: fontSizeLink,
           fullText: JUMP_ICON,
           showText: JUMP_ICON,
@@ -1179,12 +1137,9 @@ export default function App() {
         });
       };
 
-      // Full-width labeled link for Combine mode, where clips are merged into one box and the
-      // links stack at the end — a bare icon would give no clue which source it points to, so
-      // we show "[name, p. N ↗]" (name truncated) for context.
-      const performInsertLabeledLink = async (destPath: string, destPage: number, articleNameStr: string, topY: number) => {
+      const performInsertLabeledLink = async (destPath: string, destPage: number, articleNameStr: string, topY: number, maxW: number) => {
         const pageNum = destPage !== undefined ? destPage + 1 : 1;
-        const cleanName = (articleNameStr || 'Unknown Document').replace(/\.[^/.]+$/, ''); // strip extension
+        const cleanName = (articleNameStr || 'Unknown Document').replace(/\.[^/.]+$/, '');
         const shortenedName = cleanName.length > 24 ? cleanName.substring(0, 23) + '…' : cleanName;
         const labelText = `[${shortenedName}, p. ${pageNum} ↗]`;
         const linkType = destPath.endsWith('.note') || destPath.endsWith('.not')
@@ -1193,9 +1148,9 @@ export default function App() {
         await PluginNoteAPI.insertTextLink({
           destPath,
           destPage: destPage || 0,
-          style: 0, // solid underline
+          style: 0,
           linkType,
-          rect: { left: 100, top: topY, right: 100 + maxWidth, bottom: topY + linkHeight },
+          rect: { left: 100, top: topY, right: 100 + maxW, bottom: topY + linkHeight },
           fontSize: fontSizeLink,
           fullText: labelText,
           showText: labelText,
@@ -1203,34 +1158,32 @@ export default function App() {
         });
       };
 
-      // Place the jump icon on the clip's last text line at the right margin when there's
-      // room; if the last line reaches too far right, drop the icon onto its own right-aligned
-      // line just below (so it never overlaps text). The first source is the inline one; any
-      // extra unique sources (rare) stack on their own lines. Returns the Y to continue from.
       const placeJumpIconForBlock = async (
         boxTop: number,
         lines: number,
         lastLineChars: number,
         links: { path: string; page: number }[],
+        maxW: number,
       ): Promise<number> => {
         const contentBottom = boxTop + lines * lineHeight;
         const [primary, ...rest] = links;
         const lastLineTop = boxTop + (lines - 1) * lineHeight;
         const lastWordRight = 100 + Math.round(lastLineChars * charWidthPx);
-        const iconLeft = (100 + maxWidth) - iconWidth;
+        const iconLeft = (100 + maxW) - iconWidth;
+        const rightMargin = 100 + maxW;
         const fitsInline = lastWordRight + Math.round(charWidthPx) <= iconLeft;
         let y: number;
         if (fitsInline) {
-          await performInsertJumpIcon(primary.path, primary.page, lastLineTop + Math.round((lineHeight - linkHeight) / 2));
-          y = contentBottom; // icon consumed no extra line
+          await performInsertJumpIcon(primary.path, primary.page, lastLineTop + Math.round((lineHeight - linkHeight) / 2), rightMargin);
+          y = contentBottom;
         } else {
           const iconTop = contentBottom + linkGap;
-          await performInsertJumpIcon(primary.path, primary.page, iconTop);
+          await performInsertJumpIcon(primary.path, primary.page, iconTop, rightMargin);
           y = iconTop + linkHeight;
         }
         for (const link of rest) {
           const iconTop = y + linkGap;
-          await performInsertJumpIcon(link.path, link.page, iconTop);
+          await performInsertJumpIcon(link.path, link.page, iconTop, rightMargin);
           y = iconTop + linkHeight;
         }
         return y + gap;
@@ -1259,7 +1212,6 @@ export default function App() {
                 articleName: item.articleName || 'Unknown Document',
               });
             } else {
-              // Silently clean up metadata in storage
               try {
                 const matchClip = clips.find(c => c.id === item.clipId);
                 if (matchClip && matchClip.elements) {
@@ -1270,283 +1222,453 @@ export default function App() {
                     await ClipService.removeLinkFromElement(matchClip.id, elemIdx);
                   }
                 }
-              } catch (e) {
-                // Ignore silent cleanup errors
-              }
+              } catch (e) {}
             }
           }
         }
         return Array.from(uniqueLinksMap.values());
       };
 
-      // Insert an image and position it at the given rect. Supernote's insertImage centers the
-      // image by default; the recipe to place it: insert → save → getLastElement → recreate the
-      // element's backing PNG (deleted after save, else code 1211) from our clip image →
-      // modifyElements with pageNum/layerNum set (else code 107) + the target rect → save.
-      // Returns whether the reposition succeeded (false = image left centered as a fallback).
-      // Places the image at (100, top), fitting it within (maxW, maxH) while preserving aspect.
-      // CRITICAL: the size is derived from the element's OWN natural rect and NEVER upscaled —
-      // asking the note to render an image larger than its source PNG makes its OpenCV resize
-      // read past the image bounds and crash the note app (cv::Exception ROI assertion).
-      // Returns the placed height on success, or null (image left centered) on failure.
+      const getImageDimensions = (imagePath: string): Promise<{ width: number; height: number }> => {
+        return new Promise((resolve) => {
+          const uri = imagePath.startsWith('file://') ? imagePath : `file://${imagePath}`;
+          Image.getSize(
+            uri,
+            (width, height) => resolve({ width, height }),
+            () => resolve({ width: 0, height: 0 })
+          );
+        });
+      };
+
+      const getElemBottom = (el: any, pageHeight: number): number => {
+        if (!el) return 0;
+        if (el.status === -1 || el.status === 2) return 0; // Skip explicitly deleted elements
+
+        let bottom = 0;
+
+        // 1. Text boxes (500, 501, 502)
+        if (el.textBox && el.textBox.textRect && typeof el.textBox.textRect.bottom === 'number') {
+          bottom = Math.max(bottom, el.textBox.textRect.bottom);
+        }
+        if (el.textRect && typeof el.textRect.bottom === 'number') {
+          bottom = Math.max(bottom, el.textRect.bottom);
+        }
+
+        // 2. Pictures (200)
+        if (el.picture && el.picture.rect && typeof el.picture.rect.bottom === 'number') {
+          bottom = Math.max(bottom, el.picture.rect.bottom);
+        }
+
+        // 3. Titles (100)
+        if (el.title) {
+          bottom = Math.max(bottom, (el.title.Y || 0) + (el.title.height || 0));
+        }
+
+        // 4. Links (600)
+        if (el.link) {
+          bottom = Math.max(bottom, (el.link.Y || 0) + (el.link.height || 0));
+        }
+
+        // 5. Recognition bounds (handwriting strokes & recognized titles)
+        const rr = el.recognizeResult;
+        if (rr && typeof rr.down_right_point_y === 'number' && rr.down_right_point_y > 0) {
+          if (rr.down_right_point_y <= pageHeight - 120) {
+            bottom = Math.max(bottom, rr.down_right_point_y);
+          }
+        }
+
+        // 6. Direct maxY (strokes & geometries)
+        if (typeof el.maxY === 'number' && el.maxY > 0 && el.maxY <= pageHeight - 120) {
+          bottom = Math.max(bottom, el.maxY);
+        }
+
+        // 7. General Y + height fallback
+        if (typeof el.Y === 'number' && typeof el.height === 'number' && el.height > 0) {
+          const yBottom = el.Y + el.height;
+          if (yBottom <= pageHeight - 120) {
+            bottom = Math.max(bottom, yBottom);
+          }
+        }
+
+        return bottom;
+      };
+
+      const pollForTargetPage = async (targetPage: number, timeoutMs = 4000): Promise<boolean> => {
+        const start = Date.now();
+        let lastJumpTime = 0;
+        while (Date.now() - start < timeoutMs) {
+          try {
+            const pageRes = await PluginCommAPI.getCurrentPageNum() as any;
+            if (pageRes && pageRes.success && pageRes.result === targetPage) {
+              await new Promise(r => setTimeout(r, 200)); // 200ms stabilization buffer
+              return true;
+            }
+          } catch (e) {}
+
+          // Active retry: re-issue jumpToPage if target page not reached after 400ms
+          if (Date.now() - lastJumpTime > 500) {
+            try {
+              await PluginCommAPI.jumpToPage(targetPage);
+              lastJumpTime = Date.now();
+            } catch (e) {}
+          }
+
+          await new Promise(r => setTimeout(r, 150));
+        }
+        return false;
+      };
+
       const insertPositionedImage = async (
         imagePath: string,
         top: number,
         maxW: number,
         maxH: number,
+        targetPage: number,
       ): Promise<number | null> => {
-        await PluginNoteAPI.insertImage(imagePath);
-        await PluginNoteAPI.saveCurrentNote();
-        try {
-          const lastRes = await PluginFileAPI.getLastElement() as any;
-          const el = (lastRes && lastRes.result) ? lastRes.result : null;
-          if (el && el.type === 200 && el.picture && el.picture.rect) {
-            const r = el.picture.rect;
-            const natW = r.right - r.left, natH = r.bottom - r.top;
-            if (natW <= 0 || natH <= 0) return null;
-            // Never scale above 1 (no upscale) → the target never exceeds the source PNG.
-            const scale = Math.min(maxW / natW, maxH / natH, 1);
-            const targetW = Math.max(1, Math.round(natW * scale));
-            const targetH = Math.max(1, Math.round(natH * scale));
-            const picturePath = el.picture.picturePath;
-            if (picturePath && !(await FileUtils.exists(picturePath))) {
-              try { await FileUtils.copyFile(imagePath, picturePath); } catch (e) { /* fall through */ }
+        const attemptInsert = async (): Promise<{ success: boolean; targetH?: number; misdropped?: boolean; misdropNum?: number }> => {
+          await PluginNoteAPI.insertImage(imagePath);
+          await PluginNoteAPI.saveCurrentNote();
+          try {
+            const lastRes = await PluginFileAPI.getLastElement() as any;
+            const el = (lastRes && lastRes.result) ? lastRes.result : null;
+            if (el && el.type === 200 && el.picture && el.picture.rect) {
+              // Verify it landed on the intended target page
+              if (el.pageNum !== undefined && el.pageNum !== targetPage) {
+                return { success: false, misdropped: true, misdropNum: el.numInPage };
+              }
+              const r = el.picture.rect;
+              const natW = r.right - r.left, natH = r.bottom - r.top;
+              if (natW <= 0 || natH <= 0) return { success: false };
+              const scale = Math.min(maxW / natW, maxH / natH, 1);
+              const targetW = Math.max(1, Math.round(natW * scale));
+              const targetH = Math.max(1, Math.round(natH * scale));
+              const picturePath = el.picture.picturePath;
+              if (picturePath && !(await FileUtils.exists(picturePath))) {
+                try { await FileUtils.copyFile(imagePath, picturePath); } catch (e) { /* fall through */ }
+              }
+              const imgLeft = 100 + imageLeftInset;
+              const modified = {
+                ...el, pageNum: targetPage, layerNum: 0,
+                picture: { ...el.picture, rect: { left: imgLeft, top, right: imgLeft + targetW, bottom: top + targetH } },
+              };
+              const modRes = await PluginFileAPI.modifyElements(notePath, targetPage, [modified]) as any;
+              if (modRes && modRes.success === false && PermissionService.isPermissionError(modRes)) {
+                reportPermissionError(modRes);
+                return { success: false };
+              }
+              await PluginNoteAPI.saveCurrentNote();
+              return (modRes && modRes.success) ? { success: true, targetH } : { success: false };
             }
-            // Inset the image left to align with the text's visual left (see imageLeftInset).
-            const imgLeft = 100 + imageLeftInset;
-            const modified = {
-              ...el, pageNum: page, layerNum: 0,
-              picture: { ...el.picture, rect: { left: imgLeft, top, right: imgLeft + targetW, bottom: top + targetH } },
-            };
-            const modRes = await PluginFileAPI.modifyElements(notePath, page, [modified]) as any;
-            if (modRes && modRes.success === false && PermissionService.isPermissionError(modRes)) {
-              reportPermissionError(modRes);
-              return null;
+          } catch (e: any) {
+            if (PermissionService.isPermissionError(e)) {
+              reportPermissionError(e);
             }
-            await PluginNoteAPI.saveCurrentNote();
-            return (modRes && modRes.success) ? targetH : null;
           }
-        } catch (e: any) {
-          if (PermissionService.isPermissionError(e)) {
-            reportPermissionError(e);
+          return { success: false };
+        };
+
+        // Try insert once
+        let res = await attemptInsert();
+        if (!res.success && res.misdropped) {
+          // Clean up misdropped element if we have its num
+          if (res.misdropNum) {
+            try {
+              const curPgRes = await PluginCommAPI.getCurrentPageNum() as any;
+              const actualPg = (curPgRes && curPgRes.success) ? curPgRes.result : (targetPage > 0 ? targetPage - 1 : 0);
+              await PluginFileAPI.deleteElements(notePath, actualPg, [res.misdropNum]);
+              await PluginNoteAPI.saveCurrentNote();
+            } catch (delErr) {}
           }
-          /* best-effort: image stays centered */
+          // Re-verify and re-jump to target page
+          await PluginCommAPI.jumpToPage(targetPage);
+          await pollForTargetPage(targetPage, 2000);
+          // Retry once
+          res = await attemptInsert();
         }
-        return null;
+
+        return (res.success && res.targetH !== undefined) ? res.targetH : null;
       };
 
-      const insertedCountByClip: Record<string, number> = {};
-      const splitRemainder: Record<string, string> = {}; // clipId -> un-inserted tail of a split clip
-      let imagesInserted = existingImageCount;
-      let outOfSpace = false;    // content didn't fit; more on the next page
-      let splitOccurred = false; // a single clip was split across pages
-      let attemptedInserts = 0;
-      // Images are positioned (insertPositionedImage) and stack like text; content is deferred
-      // to a new page only when it doesn't fit the remaining space.
-      let pageHasContent = currentY > 100 || existingImageCount > 0;
-
       let i = 0;
-      while (i < items.length) {
-        const item = items[i];
+      const insertedCountByClip: Record<string, number> = {};
+      const splitRemainder: Record<string, string> = {};
+      let attemptedInserts = 0;
+      let pageBudget = 20; // Bounded loop max 20 pages
+      let stoppedEarlyOutOfSpace = false;
 
-        if (item.type === 'image') {
-          if (!item.imagePath) {
+      while (i < items.length && pageBudget > 0) {
+        pageBudget--;
+
+        let pageWidth = 1404;
+        let pageHeight = 1872;
+        try {
+          const sizeRes = await PluginFileAPI.getPageSize(notePath, currentPage) as any;
+          if (sizeRes && sizeRes.success && sizeRes.result) {
+            pageWidth = sizeRes.result.width;
+            pageHeight = sizeRes.result.height;
+          }
+        } catch (e) {}
+
+        const maxWidth = pageWidth - 200;
+        const charsPerLine = Math.max(1, Math.floor(maxWidth / (fontSize * 0.5)));
+        const estimateTextLines = (t: string) => countWrappedLines(t, charsPerLine);
+        const estimateTextHeight = (linesCount: number) => linesCount * lineHeight;
+        const boxDescenderPad = Math.round(lineHeight * 0.35);
+
+        const insertTextBox = async (content: string, top: number, height: number) => {
+          await PluginNoteAPI.insertText({
+            textContentFull: content,
+            textRect: { left: 100, top, right: 100 + maxWidth, bottom: top + height + boxDescenderPad },
+            fontSize,
+            textAlign: 0,
+            textBold: 0,
+            textItalics: 0,
+            textFrameWidthType: 0,
+            textFrameStyle: 0,
+            textEditable: 1,
+          });
+        };
+
+        let currentY = 100;
+        const beforeIds = new Set<string>();
+        let existingImageCount = 0;
+
+        const elementsRes = await PluginFileAPI.getElements(currentPage, notePath) as any;
+        if (elementsRes && elementsRes.success && Array.isArray(elementsRes.result)) {
+          for (const el of elementsRes.result) {
+            if (el.uuid) beforeIds.add(el.uuid);
+            if (el.type === 200) existingImageCount++;
+            const elBottom = getElemBottom(el, pageHeight);
+            if (elBottom > currentY && elBottom <= pageHeight) {
+              currentY = elBottom;
+            }
+          }
+        }
+        if (currentY > 100) {
+          currentY += gap;
+        }
+
+        let pageHasContent = currentY > 100 || existingImageCount > 0;
+
+        while (i < items.length) {
+          const item = items[i];
+
+          if (item.type === 'image') {
+            if (!item.imagePath) {
+              insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
+              i++;
+              continue;
+            }
+
+            // 8b: Upfront real image dimension reading
+            let imgW = item.width || 0;
+            let imgH = item.height || 0;
+            if (!imgW || !imgH) {
+              const dims = await getImageDimensions(item.imagePath);
+              if (dims.width > 0 && dims.height > 0) {
+                imgW = dims.width;
+                imgH = dims.height;
+              }
+            }
+
+            const availHeight = (pageHeight - gap) - currentY;
+            const fullPageAvail = (pageHeight - gap) - 100;
+            const maxW = maxWidth - imageLeftInset;
+
+            const targetW = imgW > 0 ? Math.min(maxW, imgW) : maxW;
+            const targetH = imgH > 0 && imgW > 0 ? Math.round(imgH * (targetW / imgW)) : 400;
+            const linkReserve = (item.documentPath && linkSource) ? linkSpace : 0;
+            const requiredHeight = targetH + linkReserve;
+
+            // If page already has content and requiredHeight doesn't fit in remaining space:
+            // defer immediately to next page (no guessFitH squeezing!)
+            if (pageHasContent && requiredHeight > availHeight) {
+              break; // move to next page
+            }
+
+            // If on a fresh page, scale down to fit full page if necessary
+            const maxH = Math.max(1, (pageHasContent ? availHeight : fullPageAvail) - linkReserve);
+            const top = currentY;
+            const placedH = await insertPositionedImage(item.imagePath, top, maxW, maxH, currentPage);
+            attemptedInserts++;
+            insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
+            pageHasContent = true;
+            await new Promise(r => setTimeout(r, 200));
+            i++;
+            if (placedH === null) {
+              break;
+            }
+            currentY = top + placedH;
+            if (item.documentPath && linkSource) {
+              const validLinks = await getValidLinksForGroup([item]);
+              if (validLinks.length > 0) {
+                const iconTop = currentY + linkGap;
+                await performInsertJumpIcon(validLinks[0].path, validLinks[0].page, iconTop, 100 + maxWidth);
+                currentY = iconTop + linkHeight;
+              }
+            }
+            currentY += gap;
+            continue;
+          }
+
+          if (!item.text || !item.text.trim()) {
             insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
             i++;
             continue;
           }
-          const linkReserve = (item.documentPath && linkSource) ? linkSpace : 0;
+
           const availHeight = (pageHeight - gap) - currentY;
-          const fullPageAvail = (pageHeight - gap) - 100;
-          // Rough pre-check (stored crop dims, may be missing) to decide defer-vs-place BEFORE
-          // inserting. The ACTUAL size comes from the element's natural rect in
-          // insertPositionedImage (which never upscales), so this is only a hint.
-          const guessW = item.width && item.width > 0 ? item.width : Math.round(maxWidth * 0.6);
-          const guessH = item.height && item.height > 0 ? item.height : Math.round(maxWidth * 0.45);
-          const guessFitW = Math.min(maxWidth, guessW);
-          const guessFitH = Math.round(guessH * (guessFitW / guessW));
-          // If it won't fit the remaining space and the page already has content, move to a new page.
-          if (pageHasContent && guessFitH + linkReserve > availHeight) {
-            outOfSpace = true;
-            break;
-          }
-          const top = currentY;
-          const maxH = Math.max(1, (pageHasContent ? availHeight : fullPageAvail) - linkReserve);
-          // Reduce by the left inset so a full-width image's right edge still lands at the
-          // text's right margin (100 + maxWidth).
-          const placedH = await insertPositionedImage(item.imagePath, top, maxWidth - imageLeftInset, maxH);
-          attemptedInserts++;
-          insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
-          imagesInserted++;
-          pageHasContent = true;
-          await new Promise(r => setTimeout(r, 300));
-          i++;
-          if (placedH === null) {
-            // Reposition failed → the image is centered; don't stack more onto this page.
-            if (i < items.length) outOfSpace = true;
-            break;
-          }
-          currentY = top + placedH;
-          // Source jump icon under the image, right-aligned (when enabled).
-          if (item.documentPath && linkSource) {
-            const validLinks = await getValidLinksForGroup([item]);
-            if (validLinks.length > 0) {
-              const iconTop = currentY + linkGap;
-              await performInsertJumpIcon(validLinks[0].path, validLinks[0].page, iconTop);
-              currentY = iconTop + linkHeight;
+
+          if (combine) {
+            const group: typeof items = [];
+            let groupLines = 0;
+            let j = i;
+            while (j < items.length && items[j].type === 'text' && items[j].text) {
+              const tempGroup = [...group, items[j]];
+              const tempCombined = tempGroup.map((g) => g.text).join('\n\n');
+              const tempGroupLines = estimateTextLines(tempCombined);
+              const tempGroupHeight = estimateTextHeight(tempGroupLines);
+              const linkCount = getUniqueLinksSync(tempGroup);
+              const totalBlockHeight = tempGroupHeight + (linkCount * linkSpace);
+              if (group.length === 0) {
+                if (totalBlockHeight > availHeight) break;
+              } else if (totalBlockHeight > availHeight) {
+                break;
+              }
+              group.push(items[j]);
+              groupLines = tempGroupLines;
+              j++;
             }
-          }
-          currentY += gap;
-          continue; // images stack like text
-        }
+            if (group.length > 0) {
+              const combined = group.map((g) => g.text).join('\n\n');
+              const combinedWrap = measureWrappedText(combined, charsPerLine);
+              const groupHeight = combinedWrap.lines * lineHeight;
+              await insertTextBox(combined, currentY, groupHeight);
+              attemptedInserts++;
+              group.forEach((g) => {
+                insertedCountByClip[g.clipId] = (insertedCountByClip[g.clipId] || 0) + 1;
+              });
 
-        // Empty/whitespace-only text elements carry no content — count them as "inserted"
-        // (so their clip can still be removed) but don't create a blank text box for them.
-        if (!item.text || !item.text.trim()) { insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1; i++; continue; }
-
-        const availHeight = (pageHeight - gap) - currentY;
-
-        if (combine) {
-          // Combine consecutive whole text items that fit into a single text box, separated
-          // by one blank line. Spacing is then a literal blank line — uniform, not dependent
-          // on the (fixed-height-box) height estimate.
-          const group: typeof items = [];
-          let groupLines = 0;
-          let j = i;
-          while (j < items.length && items[j].type === 'text' && items[j].text) {
-            const tempGroup = [...group, items[j]];
-            const tempCombined = tempGroup.map((g) => g.text).join('\n\n');
-            const tempGroupLines = estimateTextLines(tempCombined);
-            const tempGroupHeight = estimateTextHeight(tempGroupLines);
-            const linkCount = getUniqueLinksSync(tempGroup);
-            const totalBlockHeight = tempGroupHeight + (linkCount * linkSpace);
-            if (group.length === 0) {
-              if (totalBlockHeight > availHeight) break; // first item alone doesn't fit → split/defer below
-            } else if (totalBlockHeight > availHeight) {
+              const validLinks = linkSource ? await getValidLinksForGroup(group) : [];
+              if (validLinks.length > 0) {
+                let ny = currentY + groupHeight + linkGap;
+                for (const link of validLinks) {
+                  await performInsertLabeledLink(link.path, link.page, link.articleName, ny, maxWidth);
+                  ny += linkSpace;
+                }
+                currentY = ny;
+              } else {
+                currentY = currentY + groupHeight + gap;
+              }
+              pageHasContent = true;
+              i = j;
+              await new Promise(r => setTimeout(r, 200));
               break;
             }
-            group.push(items[j]);
-            groupLines = tempGroupLines;
-            j++;
           }
-          if (group.length > 0) {
-            const combined = group.map((g) => g.text).join('\n\n');
-            const combinedWrap = measureWrappedText(combined, charsPerLine);
-            const groupHeight = combinedWrap.lines * lineHeight;
-            await insertTextBox(combined, currentY, groupHeight);
+
+          // Single text item
+          const t = item.text;
+          const wrap = measureWrappedText(t, charsPerLine);
+          const estLines = wrap.lines;
+          const estH = estLines * lineHeight;
+          const singleLinkCount = item.documentPath ? 1 : 0;
+          const totalSingleHeight = estH + (singleLinkCount * linkSpace);
+
+          if (totalSingleHeight <= availHeight) {
+            await insertTextBox(t, currentY, estH);
             attemptedInserts++;
-            group.forEach((g) => { insertedCountByClip[g.clipId] = (insertedCountByClip[g.clipId] || 0) + 1; });
+            insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
 
-            const validLinks = linkSource ? await getValidLinksForGroup(group) : [];
-            if (validLinks.length > 0) {
-              // Combine mode: stack labeled links after the box so each is identifiable.
-              let ny = currentY + groupHeight + linkGap;
-              for (const link of validLinks) {
-                await performInsertLabeledLink(link.path, link.page, link.articleName, ny);
-                ny += linkSpace;
+            let linksInserted = false;
+            if (item.documentPath && linkSource) {
+              const validLinks = await getValidLinksForGroup([item]);
+              if (validLinks.length > 0) {
+                currentY = await placeJumpIconForBlock(currentY, estLines, wrap.lastLineChars, validLinks, maxWidth);
+                linksInserted = true;
               }
-              currentY = ny;
-            } else {
-              currentY = currentY + groupHeight + gap;
             }
+            if (!linksInserted) currentY = currentY + estH + gap;
             pageHasContent = true;
-            i = j;
-            await new Promise(r => setTimeout(r, 300));
-            // One combined box per page: whatever remains continues on the next page.
-            if (i < items.length) {
-              outOfSpace = true;
+            i++;
+            await new Promise(r => setTimeout(r, 200));
+            if (combine) break;
+            continue;
+          } else {
+            const fullPageAvail = (pageHeight - gap) - 100;
+            if (!autoRemove && totalSingleHeight <= fullPageAvail) {
+              break; // Defer whole clip to next page
             }
-            break;
-          }
-          // group empty → the single item is taller than the remaining space; fall through.
-        }
-
-        // Single text item: fits whole, or split across pages, or defer to a fresh page.
-        const t = item.text;
-        const wrap = measureWrappedText(t, charsPerLine);
-        const estLines = wrap.lines;
-        const estH = estLines * lineHeight;
-        const singleLinkCount = item.documentPath ? 1 : 0;
-        const totalSingleHeight = estH + (singleLinkCount * linkSpace);
-        if (totalSingleHeight <= availHeight) {
-          await insertTextBox(t, currentY, estH);
-          attemptedInserts++;
-          insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
-
-          let linksInserted = false;
-          if (item.documentPath && linkSource) {
-            const validLinks = await getValidLinksForGroup([item]);
-            if (validLinks.length > 0) {
-              // Icon on the last text line at the right margin (no extra line → even spacing).
-              currentY = await placeJumpIconForBlock(currentY, estLines, wrap.lastLineChars, validLinks);
-              linksInserted = true;
+            const linesThatFit = Math.floor((availHeight - (item.documentPath ? linkSpace : 0)) / lineHeight);
+            if (linesThatFit < MIN_SPLIT_LINES) {
+              break; // Defer to fresh page
             }
-          }
-          if (!linksInserted) currentY = currentY + estH + gap;
-          pageHasContent = true;
-          i++;
-          await new Promise(r => setTimeout(r, 300));
-          if (combine) break; // combine handles multi-item via the group; be safe
-          continue; // separate mode: keep stacking boxes on this page
-        } else {
-          // When auto-remove is OFF the clip is kept intact, so we can't trim it down to the
-          // un-inserted remainder — splitting would leave the whole clip in Clipper and
-          // re-inserting on the next page would duplicate the chunk. Defer the WHOLE clip to a
-          // fresh page instead, as long as it fits on one (a clip taller than a full page has
-          // no choice but to split).
-          const fullPageAvail = (pageHeight - gap) - 100;
-          if (!autoRemove && totalSingleHeight <= fullPageAvail) {
-            outOfSpace = true;
-            break;
-          }
-          const linesThatFit = Math.floor((availHeight - (item.documentPath ? linkSpace : 0)) / lineHeight);
-          if (linesThatFit < MIN_SPLIT_LINES) { outOfSpace = true; break; } // start fresh next page
-          // Leave headroom for word-wrap waste so the chunk actually wraps within linesThatFit.
-          const charBudget = Math.floor(linesThatFit * charsPerLine * 0.9);
-          const [chunk, remainder] = splitTextToFit(t, charBudget);
-          if (!chunk) { outOfSpace = true; break; }
-          const chunkWrap = measureWrappedText(chunk, charsPerLine);
-          const chunkH = chunkWrap.lines * lineHeight;
-          await insertTextBox(chunk, currentY, chunkH);
-          attemptedInserts++;
-          if (remainder) { splitRemainder[item.clipId] = remainder; splitOccurred = true; }
+            const charBudget = Math.floor(linesThatFit * charsPerLine * 0.9);
+            const [chunk, remainder] = splitTextToFit(t, charBudget);
+            if (!chunk) {
+              break;
+            }
+            const chunkWrap = measureWrappedText(chunk, charsPerLine);
+            const chunkH = chunkWrap.lines * lineHeight;
+            await insertTextBox(chunk, currentY, chunkH);
+            attemptedInserts++;
+            if (remainder) {
+              item.text = remainder;
+              splitRemainder[item.clipId] = remainder;
+            }
 
-          if (item.documentPath && linkSource) {
-            const validLinks = await getValidLinksForGroup([item]);
-            if (validLinks.length > 0) {
-              currentY = await placeJumpIconForBlock(currentY, chunkWrap.lines, chunkWrap.lastLineChars, validLinks);
+            if (item.documentPath && linkSource) {
+              const validLinks = await getValidLinksForGroup([item]);
+              if (validLinks.length > 0) {
+                currentY = await placeJumpIconForBlock(currentY, chunkWrap.lines, chunkWrap.lastLineChars, validLinks, maxWidth);
+              } else {
+                currentY = currentY + chunkH + gap;
+              }
             } else {
               currentY = currentY + chunkH + gap;
             }
-          } else {
-            currentY = currentY + chunkH + gap;
+            await PluginNoteAPI.saveCurrentNote();
+            await new Promise(r => setTimeout(r, 200));
+            break;
           }
-          await PluginNoteAPI.saveCurrentNote();
-          await new Promise(r => setTimeout(r, 300));
-          break; // page full
+        }
+
+        await PluginNoteAPI.saveCurrentNote();
+
+        if (i >= items.length) {
+          break;
+        }
+
+        // Advance to next existing page or notify end of note
+        const nextPage = currentPage + 1;
+        if (nextPage < currentTotalPages) {
+          const jumpRes = await PluginCommAPI.jumpToPage(nextPage) as any;
+          if (!jumpRes || jumpRes.success === false) {
+            stoppedEarlyOutOfSpace = true;
+            break;
+          }
+          const settled = await pollForTargetPage(nextPage, 3000);
+          if (!settled) {
+            ToastAndroid.show('Turn the page and tap Insert to continue.', ToastAndroid.LONG);
+            stoppedEarlyOutOfSpace = true;
+            break;
+          }
+          currentPage = nextPage;
+        } else {
+          // Re-enable ask-then-create when the host implements insertNotePage; see RATTA_REPORT_insertNotePage.md
+          await askUserConfirmation(
+            'Page Full',
+            'No more room in this note. Add a new page to the note, then reopen Clipper and tap Insert to continue.',
+            'OK'
+          );
+          stoppedEarlyOutOfSpace = true;
+          break;
         }
       }
 
-      // Persist any remaining (text) inserts. Images were saved individually above.
       await PluginNoteAPI.saveCurrentNote();
 
-      // Verify how many new elements actually persisted, so we NEVER remove clip content
-      // that didn't land in the note (image inserts can silently drop).
-      let persistedNew = 0;
-      try {
-        const verify = await PluginFileAPI.getElements(page, notePath) as any;
-        if (verify && verify.success && Array.isArray(verify.result)) {
-          persistedNew = verify.result.filter((el: any) => el.uuid && !beforeIds.has(el.uuid)).length;
-        }
-      } catch (e) { /* best-effort */ }
-
-      const allPersisted = attemptedInserts > 0 && persistedNew >= attemptedInserts;
-      if (allPersisted && autoRemove) {
-        // Now it's safe to remove inserted content from Clipper. Per clip:
-        //  - split: drop the fully-inserted leading elements and keep only the un-inserted
-        //    tail of the split text element (so re-inserting continues, not duplicates);
-        //  - fully inserted: delete;
-        //  - partially inserted (later elements deferred): trim the inserted leading prefix.
+      if (autoRemove && attemptedInserts > 0) {
         const fullyInsertedIds: string[] = [];
         for (const c of clipsToInsert) {
           const inserted = insertedCountByClip[c.id] || 0;
@@ -1563,29 +1685,20 @@ export default function App() {
         if (fullyInsertedIds.length > 0) await ClipService.deleteClips(fullyInsertedIds);
       }
 
-      if (splitOccurred) {
+      if (i < items.length && splitRemainder[items[i]?.clipId]) {
         ToastAndroid.show(
           'Clip too long for one page — inserted part. Turn to a new page, then Insert again to continue.',
           ToastAndroid.LONG
         );
-        // Return to the note so the user can add a page for the remainder.
         PluginManager.closePluginView();
-      } else if (outOfSpace) {
-        // Covers "text filled the page" and "a figure was placed and more clips remain" —
-        // either way the rest continues on a new page, so return to the note to navigate.
-        ToastAndroid.show(
-          'More clips remain. Turn to a new page, then Insert again to continue.',
-          ToastAndroid.LONG
-        );
+      } else if (stoppedEarlyOutOfSpace || i < items.length) {
+        // Page Full modal was already acknowledged by the user; close cleanly
         PluginManager.closePluginView();
-      } else if (!allPersisted) {
-        ToastAndroid.show('Some clips could not be inserted; they are kept in Clipper.', ToastAndroid.LONG);
       } else {
         ToastAndroid.show(
           autoRemove ? 'Clips inserted successfully!' : 'Clips inserted (kept in Clipper)',
           ToastAndroid.SHORT
         );
-        // Return to the document to show the newly inserted content.
         PluginManager.closePluginView();
       }
     } catch (e: any) {
@@ -2006,7 +2119,13 @@ export default function App() {
         onConfirm={() => {
           onConfirmCallback?.fn();
         }}
-        onCancel={() => setShowConfirmDialog(false)}
+        onCancel={() => {
+          if (onCancelCallback?.fn) {
+            onCancelCallback.fn();
+          } else {
+            setShowConfirmDialog(false);
+          }
+        }}
       />
 
       {/* Modal for Editing Heading Title */}

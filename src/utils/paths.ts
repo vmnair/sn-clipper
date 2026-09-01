@@ -17,3 +17,9 @@ export const isDocFile = (filePath?: string | null): boolean => {
   const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
   return DOC_EXTENSIONS.includes(ext);
 };
+
+// True when the path points at an editable note file (.note, .not, or extensionless note).
+export const isNoteFile = (filePath?: string | null): boolean => {
+  if (!filePath) return false;
+  return !isDocFile(filePath);
+};

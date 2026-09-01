@@ -6,7 +6,7 @@ import App from './src/App';
 import {name as appName} from './app.json';
 import {PluginManager, PluginDocAPI, PluginCommAPI} from 'sn-plugin-lib';
 import {ClipService} from './src/services/ClipService';
-import {deriveArticleName} from './src/utils/paths';
+import {deriveArticleName, isNoteFile, isDocFile} from './src/utils/paths';
 import {PermissionService, FILE_READ} from './src/services/PermissionService';
 
 const { ImageCropModule } = NativeModules;
@@ -187,7 +187,18 @@ PluginManager.registerButtonListener({
         }
 
         if (outcome === 'unavailable') {
-          await captureReaderScreenToPending();
+          let isDoc = false;
+          try {
+            const fileRes = await PluginCommAPI.getCurrentFilePath();
+            if (fileRes && fileRes.success && fileRes.result) {
+              isDoc = isDocFile(fileRes.result);
+            }
+          } catch (e) {}
+          if (isDoc) {
+            await captureReaderScreenToPending();
+          } else {
+            ClipService.clearPendingCropShot();
+          }
           await PluginManager.showPluginView();
           return;
         }
@@ -198,7 +209,22 @@ PluginManager.registerButtonListener({
           return;
         }
 
-        await captureReaderScreenToPending();
+        let isDoc = false;
+        try {
+          const fileRes = await PluginCommAPI.getCurrentFilePath();
+          if (fileRes && fileRes.success && fileRes.result) {
+            isDoc = isDocFile(fileRes.result);
+          }
+        } catch (e) {}
+
+        // 7a: For NOTE files, do NOT screencap the screen with template lines.
+        // generateNotePng in App.tsx will be the primary source without templates.
+        // Only capture reader screencap for confirmed DOC files.
+        if (isDoc) {
+          await captureReaderScreenToPending();
+        } else {
+          ClipService.clearPendingCropShot();
+        }
         await PluginManager.showPluginView();
       } catch (err) {
         console.error('Error in button 101 handler:', err);

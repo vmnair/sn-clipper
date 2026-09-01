@@ -5,6 +5,7 @@ import { ClipService } from '../src/services/ClipService';
 import { StorageService, ClipItem } from '../src/services/StorageService';
 import { Clipboard, ToastAndroid, Text, Pressable, TextInput } from 'react-native';
 import { PluginManager } from 'sn-plugin-lib';
+import { ConfirmationDialog } from '../src/components/ConfirmationDialog';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
   let store: Record<string, string> = {};
@@ -83,6 +84,8 @@ jest.mock('react-native', () => {
   };
 });
 
+let mockCurrentPage = 0;
+
 jest.mock('sn-plugin-lib', () => ({
   PluginManager: {
     init: jest.fn(),
@@ -93,7 +96,12 @@ jest.mock('sn-plugin-lib', () => ({
   },
   PluginCommAPI: {
     getCurrentFilePath: jest.fn().mockResolvedValue({ success: true, result: '/sdcard/Notes/MyNote.note' }),
-    getCurrentPageNum: jest.fn().mockResolvedValue({ success: true, result: 0 }),
+    getCurrentPageNum: jest.fn().mockImplementation(async () => ({ success: true, result: mockCurrentPage })),
+    jumpToPage: jest.fn().mockImplementation(async (pg: number) => {
+      mockCurrentPage = pg;
+      return { success: true, result: true };
+    }),
+    reloadFile: jest.fn().mockResolvedValue({ success: true, result: true }),
   },
   PluginFileAPI: {
     getPageSize: jest.fn().mockResolvedValue({ success: true, result: { width: 1404, height: 1872 } }),
@@ -103,6 +111,10 @@ jest.mock('sn-plugin-lib', () => ({
     insertElements: jest.fn().mockResolvedValue({ success: true }),
     generateNotePng: jest.fn().mockResolvedValue({ success: true }),
     openFile: jest.fn().mockResolvedValue({ success: true }),
+    getNoteTotalPageNum: jest.fn().mockResolvedValue({ success: true, result: 1 }),
+    insertNotePage: jest.fn().mockResolvedValue({ success: true, result: true }),
+    getNotePageTemplate: jest.fn().mockResolvedValue({ success: true, result: { name: 'style_5mm_dots' } }),
+    getPathEncryptionStatus: jest.fn().mockResolvedValue({ success: true, result: 0 }),
   },
   PluginDocAPI: {
     generateCurrentDocImage: jest.fn().mockResolvedValue({ success: true }),
@@ -113,6 +125,7 @@ jest.mock('sn-plugin-lib', () => ({
     insertText: jest.fn().mockResolvedValue({ success: true }),
     insertImage: jest.fn().mockResolvedValue({ success: true, result: { uuid: 'mock-uuid', picture: { rect: { left: 0, top: 0, right: 300, bottom: 300 } } } }),
     insertTextLink: jest.fn().mockResolvedValue({ success: true }),
+    generateLayerPreviewImage: jest.fn().mockResolvedValue({ success: true }),
   },
   FileUtils: {
     deleteFile: jest.fn().mockResolvedValue(true),
@@ -128,13 +141,22 @@ describe('App Component', () => {
   beforeEach(async () => {
     jest.restoreAllMocks();
     jest.clearAllMocks();
-    // getElements is configured per-test with mockResolvedValue(Once); reset it to a clean
-    // empty default each time so a persistent mock from one test can't leak into the next.
-    const { PluginFileAPI } = require('sn-plugin-lib');
+    const { PluginFileAPI, PluginCommAPI, PluginDocAPI } = require('sn-plugin-lib');
     PluginFileAPI.getElements.mockReset();
     PluginFileAPI.getElements.mockResolvedValue({ success: true, result: [] });
+    PluginFileAPI.generateNotePng.mockResolvedValue({ success: true });
+    PluginDocAPI.generateCurrentDocImage.mockResolvedValue({ success: true });
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/MyNote.note' });
+    PluginCommAPI.getCurrentPageNum.mockImplementation(async () => ({ success: true, result: mockCurrentPage }));
+    PluginCommAPI.jumpToPage.mockImplementation(async (pg: number) => {
+      mockCurrentPage = pg;
+      return { success: true, result: true };
+    });
+    PluginCommAPI.reloadFile.mockResolvedValue({ success: true, result: true });
+    PluginFileAPI.getNoteTotalPageNum.mockResolvedValue({ success: true, result: 1 });
     // Reset persisted settings (combine/font/auto-remove) so they don't leak between tests.
     await require('@react-native-async-storage/async-storage').clear();
+    mockCurrentPage = 0;
     (ClipService as any).listeners = [];
     await ClipService.clearClips();
     (ClipService as any).initialized = false;
@@ -148,7 +170,7 @@ describe('App Component', () => {
     });
     // Wait for useEffect init and state update
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 50));
     });
     return root;
   };
@@ -546,7 +568,7 @@ describe('App Component', () => {
     expect(ClipService.getClipsSync().length).toBe(0); // both inserted + removed
   });
 
-  it('splits a clip too long for one page, inserting one chunk and keeping the remainder', async () => {
+  it('splits a clip too long for one page, inserting one chunk and keeping the remainder when page addition declined', async () => {
     const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     PluginFileAPI.getElements
       .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
@@ -564,8 +586,16 @@ describe('App Component', () => {
 
     const root = await renderApp();
     const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    const insertPromise = insertBtn.props.onPress();
     await act(async () => {
-      await insertBtn.props.onPress();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+
+    // Confirmation dialog appears for past-last-page overflow; user cancels/declines
+    await act(async () => {
+      const dialog = root.root.findByType(ConfirmationDialog);
+      dialog.props.onCancel();
+      await insertPromise;
     });
 
     // Exactly one chunk is inserted this pass.
@@ -587,20 +617,23 @@ describe('App Component', () => {
     expect(sentences.endsWith(clips[0].text)).toBe(true); // remainder is the tail
   });
 
-  it('defers the whole clip (no split) when auto-remove is off and it fits a fresh page', async () => {
-    const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
-    // Keep clips intact.
-    jest.spyOn(StorageService, 'getAutoRemoveInserted').mockResolvedValue(false);
-    // Existing content leaves almost no room on this page (bottom near the 1872 page height).
-    PluginFileAPI.getElements.mockResolvedValue({
-      success: true,
-      result: [
-        { uuid: 'existing', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 1800 } } },
-      ],
-    });
+  it('auto-turns to next page via jumpToPage without dialog when next page exists', async () => {
+    const { PluginNoteAPI, PluginFileAPI, PluginCommAPI } = require('sn-plugin-lib');
+    // Note has 2 total pages, starting on page 0
+    PluginFileAPI.getNoteTotalPageNum.mockResolvedValue({ success: true, result: 2 });
 
-    await ClipService.addClip('A normal-length clip that easily fits on a fresh page.', 'Doc A');
-    const originalLen = ClipService.getClipsSync()[0].text.length;
+    // Page 0 is full; page 1 is empty
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({
+        success: true,
+        result: [{ uuid: 'existing', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 1800 } } }],
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        result: [],
+      });
+
+    await ClipService.addClip('Clip that fits on page 2', 'Doc A');
 
     const root = await renderApp();
     const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
@@ -608,16 +641,85 @@ describe('App Component', () => {
       await insertBtn.props.onPress();
     });
 
-    // No partial chunk is inserted — the whole clip is deferred to a new page…
+    // Auto-jumped to page 1 (no confirmation dialog needed since page exists)
+    expect(PluginCommAPI.jumpToPage).toHaveBeenCalledWith(1);
+    expect(PluginNoteAPI.insertText).toHaveBeenCalledTimes(1);
+    expect(ToastAndroid.show).toHaveBeenCalledWith('Clips inserted successfully!', ToastAndroid.SHORT);
+    expect(ClipService.getClipsSync().length).toBe(0);
+  });
+
+  it('shows Page Full modal and preserves queued clips when overflowing past the last page', async () => {
+    const { PluginNoteAPI, PluginFileAPI, PluginManager } = require('sn-plugin-lib');
+    PluginFileAPI.getNoteTotalPageNum.mockResolvedValue({ success: true, result: 1 });
+
+    // Page 0 is full
+    PluginFileAPI.getElements.mockResolvedValue({
+      success: true,
+      result: [{ uuid: 'existing', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 1800 } } }],
+    });
+
+    await ClipService.addClip('Clip overflowing last page', 'Doc A');
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    const insertPromise = insertBtn.props.onPress();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+
+    // Page Full modal appears; user taps OK
+    await act(async () => {
+      const dialog = root.root.findByType(ConfirmationDialog);
+      expect(dialog.props.title).toBe('Page Full');
+      expect(dialog.props.confirmLabel).toBe('OK');
+      dialog.props.onConfirm();
+      await insertPromise;
+    });
+
     expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
-    expect(ToastAndroid.show).toHaveBeenCalledWith(
-      'More clips remain. Turn to a new page, then Insert again to continue.',
-      ToastAndroid.LONG
-    );
-    // …and it stays in Clipper intact (not trimmed).
+    expect(PluginManager.closePluginView).toHaveBeenCalled();
+    // Clip remains queued in Clipper
     const clips = ClipService.getClipsSync();
     expect(clips.length).toBe(1);
-    expect(clips[0].text.length).toBe(originalLen);
+    expect(clips[0].text).toBe('Clip overflowing last page');
+  });
+
+  it('splits long clip and trims to remainder when overflowing past last page', async () => {
+    const { PluginNoteAPI, PluginFileAPI, PluginManager } = require('sn-plugin-lib');
+    PluginFileAPI.getNoteTotalPageNum.mockResolvedValue({ success: true, result: 1 });
+
+    // Page 0 has some space for first chunk
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({ success: true, result: [] })
+      .mockResolvedValueOnce({
+        success: true,
+        result: [{ uuid: 'chunk-uuid', type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom: 1700 } } }],
+      });
+
+    const sentences = Array.from({ length: 90 }, (_, i) => `This is sentence number ${i}.`).join(' ');
+    await ClipService.addClip(sentences, 'Doc A');
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    const insertPromise = insertBtn.props.onPress();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+
+    // Page Full modal appears for remaining portion; user taps OK
+    await act(async () => {
+      const dialog = root.root.findByType(ConfirmationDialog);
+      expect(dialog.props.title).toBe('Page Full');
+      dialog.props.onConfirm();
+      await insertPromise;
+    });
+
+    expect(PluginNoteAPI.insertText).toHaveBeenCalledTimes(1); // chunk 1 on page 0
+    expect(PluginManager.closePluginView).toHaveBeenCalled();
+    // Remainder stays queued in Clipper
+    const clips = ClipService.getClipsSync();
+    expect(clips.length).toBe(1);
+    expect(clips[0].text).toContain('This is sentence number');
   });
 
   it('stacks a new image below existing content on the page', async () => {
@@ -653,8 +755,8 @@ describe('App Component', () => {
     expect(ClipService.getClipsSync().length).toBe(0); // inserted + removed
   });
 
-  it('alerts to add a page and does not insert when a clip does not fit', async () => {
-    const { PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
+  it('alerts Page Full and closes cleanly when a clip does not fit past last page', async () => {
+    const { PluginFileAPI, PluginNoteAPI, PluginManager } = require('sn-plugin-lib');
     // Existing content fills nearly the whole page, so the new clip cannot fit.
     PluginFileAPI.getElements.mockResolvedValueOnce({
       success: true,
@@ -670,16 +772,21 @@ describe('App Component', () => {
 
     const root = await renderApp();
     const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    const insertPromise = insertBtn.props.onPress();
     await act(async () => {
-      await insertBtn.props.onPress();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+
+    await act(async () => {
+      const dialog = root.root.findByType(ConfirmationDialog);
+      expect(dialog.props.title).toBe('Page Full');
+      dialog.props.onConfirm();
+      await insertPromise;
     });
 
     // Nothing is placed off-page; the user is told to add a page instead.
     expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
-    expect(ToastAndroid.show).toHaveBeenCalledWith(
-      'More clips remain. Turn to a new page, then Insert again to continue.',
-      ToastAndroid.LONG
-    );
+    expect(PluginManager.closePluginView).toHaveBeenCalled();
   });
 
   it('ignores deleted elements (status !== 0) when calculating starting Y coordinate', async () => {
@@ -716,7 +823,7 @@ describe('App Component', () => {
     expect(call.textRect.top).toBeLessThan(300);
   });
 
-  it('ignores stroke elements entirely when calculating starting Y coordinate', async () => {
+  it('respects stroke elements within valid bounds when calculating starting Y coordinate', async () => {
     const { PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
 
     PluginFileAPI.getElements
@@ -726,7 +833,42 @@ describe('App Component', () => {
           {
             type: 0, // TYPE_STROKE (handwriting)
             status: 0,
-            maxY: 1680,
+            maxY: 450,
+          },
+        ],
+      })
+      .mockResolvedValue({
+        success: true,
+        result: [
+          { uuid: 'new-txt-uuid', type: 500, textBox: { textRect: { left: 100, top: 480, right: 1304, bottom: 580 } } },
+        ],
+      });
+
+    await ClipService.addClip('Test snippet', 'Doc A');
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // Insertion should start below the stroke (450 + 32 gap = 482)
+    expect(PluginNoteAPI.insertText).toHaveBeenCalled();
+    const call = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0];
+    expect(call.textRect.top).toBe(482);
+  });
+
+  it('ignores out-of-bounds stroke noise when calculating starting Y coordinate', async () => {
+    const { PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
+
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({
+        success: true,
+        result: [
+          {
+            type: 0, // TYPE_STROKE out of bounds (> 1872 - 120)
+            status: 0,
+            maxY: 1800,
           },
         ],
       })
@@ -745,7 +887,7 @@ describe('App Component', () => {
       await insertBtn.props.onPress();
     });
 
-    // Insertion should start at default Y = 100 since the stroke is completely ignored.
+    // Out-of-bounds stroke noise is ignored, starts at top (100)
     expect(PluginNoteAPI.insertText).toHaveBeenCalled();
     const call = (PluginNoteAPI.insertText as jest.Mock).mock.calls[0][0];
     expect(call.textRect.top).toBe(100);
@@ -1102,6 +1244,8 @@ describe('App Component', () => {
   });
 
   it('handles custom page cropping flow successfully', async () => {
+    const { PluginCommAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/Manual.pdf' });
     ClipService.setPendingCropShot({
       path: '/tmp/test_crop.png',
       width: 1404,
@@ -1297,6 +1441,8 @@ describe('App Component', () => {
   });
 
   it('keeps the crop overlay open when a follow-up context check runs (AppState active race)', async () => {
+    const { PluginCommAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/Manual.pdf' });
     ClipService.setPendingCropShot({
       path: '/tmp/test_crop.png',
       width: 1404,
@@ -1322,6 +1468,8 @@ describe('App Component', () => {
   });
 
   it('shows selection prompt modal and handles Clip as Image', async () => {
+    const { PluginCommAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/Manual.pdf' });
     ClipService.setPendingCropShot({
       path: '/tmp/test_crop.png',
       width: 1404,
@@ -1626,6 +1774,49 @@ describe('App Component', () => {
     PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 0 });
   });
 
+  it('shows password locked toast when jumping to an encrypted document', async () => {
+    const { FileUtils, PluginCommAPI, PluginFileAPI } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/MyNote.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 0 });
+    PluginFileAPI.getPathEncryptionStatus.mockResolvedValue({ success: true, result: 1 }); // 1 = encrypted / locked
+
+    const testClips: ClipItem[] = [
+      {
+        id: 'c-locked',
+        text: 'Encrypted document snippet',
+        elements: [{
+          type: 'text',
+          text: 'Encrypted document snippet',
+          documentPath: '/sdcard/Books/secret.pdf',
+          documentPage: 2,
+          articleName: 'secret.pdf',
+        }],
+        articleName: 'secret.pdf',
+        timestamp: 650,
+      },
+    ];
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue(testClips);
+    const root = await renderApp();
+
+    const jumpBtn = root.root.find((el: any) => {
+      return el.type === 'Pressable' && el.props.testID === 'jump-btn';
+    });
+    expect(jumpBtn).toBeTruthy();
+
+    await act(async () => {
+      await jumpBtn.props.onPress({ stopPropagation: () => {} });
+    });
+
+    const { ToastAndroid } = require('react-native');
+    expect(PluginFileAPI.openFile).not.toHaveBeenCalled();
+    expect(ToastAndroid.show).toHaveBeenCalledWith('This file is locked with a password.', ToastAndroid.LONG);
+
+    // Restore encryption status mock
+    PluginFileAPI.getPathEncryptionStatus.mockResolvedValue({ success: true, result: 0 });
+  });
+
   it('shows toast and does not close plugin view when openFile returns generic failure', async () => {
     const { FileUtils, PluginCommAPI, PluginFileAPI, PluginManager } = require('sn-plugin-lib');
     FileUtils.exists.mockResolvedValue(true);
@@ -1751,13 +1942,43 @@ describe('App Component', () => {
     expect(removeLinkSpy).toHaveBeenCalledWith('c3', 0);
   });
 
-  it('handles fallback cropping in a note file using generateNotePng', async () => {
-    const { PluginCommAPI, PluginFileAPI } = require('sn-plugin-lib');
+  it('handles fallback cropping in a note file using generateLayerPreviewImage', async () => {
+    const { PluginCommAPI, PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Meeting.note' });
     PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 2 });
+    PluginNoteAPI.generateLayerPreviewImage.mockClear();
     PluginFileAPI.generateNotePng.mockClear();
 
     // No pending background crop shot (resolves null immediately)
+    ClipService.clearPendingCropShot();
+    jest.spyOn(ClipService, 'waitForPendingCropShot').mockResolvedValue(null);
+    await ClipService.setLaunchMode('crop');
+
+    const root = await renderApp();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(PluginNoteAPI.generateLayerPreviewImage).toHaveBeenCalledWith(
+      '/sdcard/Notes/Meeting.note',
+      2,
+      0,
+      expect.any(String)
+    );
+    expect(PluginFileAPI.generateNotePng).not.toHaveBeenCalled();
+
+    const workspace = root.root.find((el) => typeof el.props.onLayout === 'function');
+    expect(workspace).toBeTruthy();
+  });
+
+  it('falls back to generateNotePng when generateLayerPreviewImage fails for a note file', async () => {
+    const { PluginCommAPI, PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Meeting.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 2 });
+    PluginNoteAPI.generateLayerPreviewImage.mockClear();
+    PluginNoteAPI.generateLayerPreviewImage.mockResolvedValueOnce({ success: false });
+    PluginFileAPI.generateNotePng.mockClear();
+
     ClipService.clearPendingCropShot();
     jest.spyOn(ClipService, 'waitForPendingCropShot').mockResolvedValue(null);
     await ClipService.setLaunchMode('crop');
@@ -1772,7 +1993,7 @@ describe('App Component', () => {
         notePath: '/sdcard/Notes/Meeting.note',
         page: 2,
         times: 1,
-        type: 1,
+        type: 0,
       })
     );
 

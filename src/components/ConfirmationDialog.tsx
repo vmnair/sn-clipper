@@ -2,16 +2,17 @@
 // Vinod Nair
 //
 // A reusable, high-contrast modal dialog matching Clipper's E-Ink design style.
-// Used for confirmation flows (e.g. deleting broken document links).
+// Used for confirmation flows (e.g. deleting broken document links, asking to add pages).
 
 import React from 'react';
 import { StyleSheet, Text, View, Pressable } from 'react-native';
 
-interface ConfirmationDialogProps {
+export interface ConfirmationDialogProps {
   visible: boolean;
   title: string;
-  description: string;
-  confirmLabel: string;
+  description?: string;
+  message?: string;
+  confirmLabel?: string;
   // Optional: when empty/omitted the dialog is single-button (e.g. an OK acknowledgement).
   cancelLabel?: string;
   onConfirm: () => void;
@@ -22,18 +23,21 @@ export function ConfirmationDialog({
   visible,
   title,
   description,
-  confirmLabel,
+  message,
+  confirmLabel = 'Confirm',
   cancelLabel,
   onConfirm,
   onCancel,
 }: ConfirmationDialogProps) {
   if (!visible) return null;
 
+  const descText = description || message || '';
+
   return (
     <View style={styles.modalOverlay}>
       <View style={styles.modalContent}>
         <Text style={styles.modalTitle}>{title}</Text>
-        <Text style={styles.modalDescription}>{description}</Text>
+        <Text style={styles.modalDescription}>{descText}</Text>
         <View style={styles.modalButtons}>
           <Pressable onPress={onConfirm} style={[styles.modalButton, styles.modalButtonPrimary]}>
             <Text style={styles.modalButtonTextPrimary}>{confirmLabel}</Text>
