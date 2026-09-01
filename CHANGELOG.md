@@ -5,6 +5,40 @@ Planned work lives in `design_instance/PERMISSION_UPGRADE_PLAN.md`; items move h
 
 ## [0.3.0] - 2026-08-30
 
+### 2026-09-01 — Fix: Auto-remove could delete clips whose inserts never landed
+Files: `src/App.tsx`, `__tests__/App.test.tsx`
+
+- The multi-page rewrite dropped the pre-existing check that inserted elements are actually present in the note before auto-remove deletes the clips they came from, and dropped the "Some clips could not be inserted" toast with it. Auto-remove ran on `attemptedInserts > 0`, so a run where every insert silently dropped still deleted every clip — content gone from Clipper and never in the note. `insertImage` is the realistic case: it can resolve successfully and leave nothing behind.
+- Fix: restore the verification, adapted to the page loop. Each page snapshots the element uuids present before its inserts and, after saving, counts how many new uuids landed; auto-remove now requires the running total to cover every attempted insert. When it does not, the clips are kept, the failure is reported, and the plugin view stays open instead of claiming success. This also puts the per-page `beforeIds` set back to use — it was still being built and then ignored.
+- Added a regression test: an insert whose verification reports no new elements keeps its clip, warns, and does not close the view. Confirmed it fails (clip deleted) with the guard reverted. 145/145 tests passing.
+
+### 2026-08-31 — Fix: Stale split-remainder could corrupt a later merged-clip element
+Files: `src/App.tsx`, `__tests__/App.test.tsx`
+
+- **Dead code:** Removed `stoppedEarlyDueToSplit` in `runInsertClips` — declared but never assigned (a leftover from the pre-Item-8 single-page code, where an equivalent `splitOccurred` flag was set explicitly; the assignment was dropped when Item 8 restructured this into the multi-page loop). The final status-message check now just reads `splitRemainder[items[i]?.clipId]` directly.
+- **Real bug found while investigating it:** `splitRemainder[clipId]` was set whenever a text item got split across pages, but was never cleared once that item later completed via the "fits whole" path (single item or combine-group). For a **merged clip** with more elements after the split one, if the insert run ended before those later elements were ever attempted, `ClipService.trimInsertedElements` would splice the stale leftover text from the *earlier, already-resolved* split onto the *next, untouched* element — silently corrupting its content.
+- Fix: clear `splitRemainder[clipId]` at the exact point an item (or combine-group member) completes successfully, so a resolved split can never leak onto a later element of the same clip.
+- Added a regression test that merges 3 clips (`E1` long enough to split, `E2`, `E3`), drives the run to Page-Full right after `E1`'s split resolves and before `E2` is ever attempted, and asserts `E2`/`E3` survive byte-for-byte. Verified the test fails (reproducing the exact corruption) with the fix reverted, and passes with it restored. 144/144 tests passing.
+
+### 2026-08-31 — Fix: Note Region Capture Baking Template Ruled Lines
+Files: `src/App.tsx`, `__tests__/App.test.tsx`
+
+- **Build 324 attempt (insufficient):** Changed `generateNotePng`'s `type: 1` → `type: 0` (SDK docs: 0 = transparent background). Confirmed on-device (pulled the raw capture from `/sdcard/.data/plugin/` directly) that ruled lines were still baked into the PNG — `type` does not control template compositing on this firmware (Chauvet `3.29.43_beta`), contrary to the SDK doc comment.
+- **Build 325 fix:** Made `PluginNoteAPI.generateLayerPreviewImage(notePath, page, 0, pngPath)` the primary render path for note region-capture instead of `generateNotePng` — it renders only the element/handwriting layer, not the page background template. `generateNotePng` (`type: 0`) is now only a fallback if the layer-preview call fails.
+- Updated/added unit tests covering both the primary `generateLayerPreviewImage` path and the `generateNotePng` fallback.
+- See `design_instance/current_status.md` for the full investigation (this was compounded by a since-fixed `PermissionService` bug that misidentified "Always Allow" as ungranted, forcing a raw framebuffer screencap fallback with visible UI/template lines).
+
+### 2026-08-30 — Item 8: Auto Page-Turn & Guided Page Full Pagination
+Files: `src/App.tsx`, `src/components/ConfirmationDialog.tsx`, `src/utils/paths.ts`, `__tests__/App.test.tsx`
+
+- **Item 8 (Auto Page-Turn on Insert across Existing Pages & Guided Page Full UX):**
+  - Wrapped `runInsertClips` in a multi-page loop bounded by `pageBudget = 20`.
+  - Added per-page dimension and robust element bottom calculation via `PluginFileAPI.getPageSize` and `PluginFileAPI.getElements` with comprehensive stroke bounding (`getElemBottom`).
+  - Implemented seamless auto page-turn via `PluginCommAPI.jumpToPage(nextPage)` with active settling polling when subsequent pages exist in the note.
+  - Implemented single-button **"Page Full"** modal when reaching the final note page, instructing users to add a page via toolbar `+` while safely preserving queued uninserted clips for instant resume.
+  - Added password-locked file pre-check in `handleOpenSource` via `PluginFileAPI.getPathEncryptionStatus`.
+  - Added unit test cases in `__tests__/App.test.tsx` covering all multi-page auto-turn, existing-page continuation, and Page Full guidance scenarios.
+
 ### 2026-08-30 — Item 7: Region Capture in NOTE Files
 Files: `index.js`, `__tests__/App.test.tsx`
 

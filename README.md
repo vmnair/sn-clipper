@@ -67,8 +67,8 @@ into a note → **settings** to tune insertion.
 - ✂️ **Long-clip auto-split.** A clip too tall for one page is split at a **sentence boundary**;
   the rest continues on the next page.
 - 🖼️ **Multiple figures (region clips) can be inserted into a page.** The previous limitation of one page, one image has been lifted.
-- 📄 **Current-page insertion.** Clipper inserts onto the page you're viewing; when more remains,
-  it inserts what fits and prompts you to **turn to a new page and Insert again**.
+- 🔄 **Auto-continue across existing pages (New in 0.3.0).** When an insert batch overflows the current page, Clipper automatically navigates to subsequent existing pages and continues placing clips seamlessly.
+- 🛑 **Page Full guidance.** When reaching the final page of a note with clips remaining, Clipper prompts you with a **Page Full** message to tap `+` in the note toolbar to add a page. Uninserted clips remain queued so tapping Insert on the new page resumes seamlessly. *(Automatic in-note page creation will return when firmware implements `insertNotePage`)*.
 
 ### ⚙️ Settings (gear icon)
 
