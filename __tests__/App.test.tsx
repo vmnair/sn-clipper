@@ -722,6 +722,63 @@ describe('App Component', () => {
     expect(clips[0].text).toContain('This is sentence number');
   });
 
+  it('does not corrupt a later merged-clip element with a resolved split\'s stale remainder', async () => {
+    // Regression test: splitRemainder[clipId] used to only ever be *set* on a split and never
+    // cleared once that element later completed via the "fits whole" path. For a merged clip
+    // with more elements after the split one, if the run ends before those later elements are
+    // ever attempted, the stale leftover text used to get spliced onto the next element's
+    // content in ClipService.trimInsertedElements (remaining[0].text overwritten).
+    const { PluginNoteAPI, PluginFileAPI, PluginCommAPI } = require('sn-plugin-lib');
+    PluginFileAPI.getNoteTotalPageNum.mockResolvedValue({ success: true, result: 2 });
+
+    // Page 0 starts empty; page 1 (after auto-turn) also starts empty.
+    PluginFileAPI.getElements
+      .mockResolvedValueOnce({ success: true, result: [] })
+      .mockResolvedValueOnce({ success: true, result: [] });
+
+    // E1: long enough that it must split on page 0, with a leftover that fits whole on a fresh
+    // page 1 but leaves too little room there for E2 to be attempted at all (deferred whole).
+    const e1 = Array.from({ length: 43 }, (_, i) =>
+      `E1 sentence number ${i} with a bit more filler text to pad it out nicely.`
+    ).join(' ');
+    const e2 = 'This second highlight needs a bit more room than what is left on the page after the first one.';
+    const e3 = 'Third highlight marker text.';
+
+    const id1 = String(await ClipService.addClip(e1, 'Doc A'));
+    await ClipService.addClip(e2, 'Doc A');
+    await ClipService.addClip(e3, 'Doc A');
+    const idsBefore = ClipService.getClipsSync().map(c => c.id);
+    await ClipService.mergeClips(idsBefore);
+    expect(ClipService.getClipsSync().length).toBe(1); // merged into one 3-element clip
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    const insertPromise = insertBtn.props.onPress();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    });
+
+    // Page Full modal appears once E2 can't fit on the last existing page; user taps OK.
+    await act(async () => {
+      const dialog = root.root.findByType(ConfirmationDialog);
+      expect(dialog.props.title).toBe('Page Full');
+      dialog.props.onConfirm();
+      await insertPromise;
+    });
+
+    expect(PluginCommAPI.jumpToPage).toHaveBeenCalledWith(1);
+    // E1's chunk (page 0) and its remainder (page 1, fits whole) — E2 never attempted.
+    expect(PluginNoteAPI.insertText).toHaveBeenCalledTimes(2);
+
+    const clips = ClipService.getClipsSync();
+    expect(clips.length).toBe(1);
+    // E1 is fully consumed (no stale remainder re-added); E2 and E3 survive byte-for-byte.
+    expect(clips[0].elements.length).toBe(2);
+    expect(clips[0].elements[0].text).toBe(e2);
+    expect(clips[0].elements[1].text).toBe(e3);
+    expect(clips[0].text).toBe(`${e2}\n\n${e3}`);
+  });
+
   it('stacks a new image below existing content on the page', async () => {
     const { PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     // Scan finds a picture already on the page; after insert, the new one is also present.

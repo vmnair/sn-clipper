@@ -1547,6 +1547,10 @@ export default function App() {
               attemptedInserts++;
               group.forEach((g) => {
                 insertedCountByClip[g.clipId] = (insertedCountByClip[g.clipId] || 0) + 1;
+                // This item may be a previously-split element whose leftover tail just got
+                // fully absorbed into this combined box — clear it so a stale remainder can't
+                // leak onto a later, unrelated element of the same (merged) clip.
+                delete splitRemainder[g.clipId];
               });
 
               const validLinks = linkSource ? await getValidLinksForGroup(group) : [];
@@ -1579,6 +1583,10 @@ export default function App() {
             await insertTextBox(t, currentY, estH);
             attemptedInserts++;
             insertedCountByClip[item.clipId] = (insertedCountByClip[item.clipId] || 0) + 1;
+            // This item may be a previously-split element (item.text was reduced to its
+            // leftover tail on an earlier page) now fully placed here — clear its stale
+            // remainder so it can't leak onto a later, unrelated element of the same clip.
+            delete splitRemainder[item.clipId];
 
             let linksInserted = false;
             if (item.documentPath && linkSource) {
