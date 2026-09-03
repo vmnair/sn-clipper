@@ -941,6 +941,12 @@ export default function App() {
           }
 
           if (layerPaths.length > 0) {
+            if (layerPaths.length < contentLayerIds.length) {
+              // Some layers rendered and some did not. Compositing what we have beats failing
+              // the capture, but the clip is missing content the user can see on the page, so
+              // say so rather than handing back a silently incomplete image.
+              ToastAndroid.show('Some note layers could not be captured; the clip may be incomplete.', ToastAndroid.LONG);
+            }
             const { NativeModules: RN } = require('react-native');
             const Compositor = RN && RN.ImageCropModule;
             if (Compositor && typeof Compositor.compositeImages === 'function') {
@@ -1154,6 +1160,10 @@ export default function App() {
       const fontSize = insertFontSize;
       const lineHeight = Math.round(fontSize * 1.2);
       const gap = Math.round(lineHeight * 0.6);
+      // Text boxes render their glyphs inset from the frame's left edge; images draw
+      // edge-to-edge. To line images up with text (and clear the note's left toolbar), inset the
+      // image left by this much. Scaled to the font (calibrated on Manta: font 44 → ~26px inset,
+      // ≈0.6·fontSize) so it tracks the user's font choice; may need per-device tuning (e.g. Nomad).
       const imageLeftInset = Math.round(fontSize * 0.6);
       const MIN_SPLIT_LINES = 3;
 
@@ -1317,6 +1327,15 @@ export default function App() {
         });
       };
 
+      // Bottom-most Y an element occupies, for deciding where the next insert starts.
+      //
+      // The `pageHeight - 120` bound on maxY/recognition values is a digitizer-noise guard
+      // (item 8a): stroke elements can report a maxY far past the page — link elements were
+      // measured reporting maxY≈16224 on a 2560-tall page — and letting such a value through
+      // would push the start-Y off the page and make everything look like it "doesn't fit".
+      // The pre-item-8 code avoided this by ignoring strokes (type 0) and text-links (type 600)
+      // outright; strokes are now included deliberately so inserts land BELOW handwriting
+      // rather than on top of it, with the clamp doing the filtering instead.
       const getElemBottom = (el: any, pageHeight: number): number => {
         if (!el) return 0;
         if (el.status === -1 || el.status === 2) return 0; // Skip explicitly deleted elements
@@ -1395,6 +1414,14 @@ export default function App() {
         return false;
       };
 
+      // Insert an image and position it at the given rect. Supernote's insertImage centers the
+      // image by default; the recipe to place it: insert → save → getLastElement → recreate the
+      // element's backing PNG (deleted after save, else code 1211) from our clip image →
+      // modifyElements with pageNum/layerNum set (else code 107) + the target rect → save.
+      // CRITICAL: the size is derived from the element's OWN natural rect and NEVER upscaled —
+      // asking the note to render an image larger than its source PNG makes its OpenCV resize
+      // read past the image bounds and crash the note app (cv::Exception ROI assertion).
+      // Returns the placed height on success, or null (image left centered) on failure.
       const insertPositionedImage = async (
         imagePath: string,
         top: number,
@@ -1416,6 +1443,7 @@ export default function App() {
               const r = el.picture.rect;
               const natW = r.right - r.left, natH = r.bottom - r.top;
               if (natW <= 0 || natH <= 0) return { success: false };
+              // Never scale above 1 (no upscale) → the target never exceeds the source PNG.
               const scale = Math.min(maxW / natW, maxH / natH, 1);
               const targetW = Math.max(1, Math.round(natW * scale));
               const targetH = Math.max(1, Math.round(natH * scale));
@@ -1423,6 +1451,7 @@ export default function App() {
               if (picturePath && !(await FileUtils.exists(picturePath))) {
                 try { await FileUtils.copyFile(imagePath, picturePath); } catch (e) { /* fall through */ }
               }
+              // Inset the image left to align with the text's visual left (see imageLeftInset).
               const imgLeft = 100 + imageLeftInset;
               const modified = {
                 ...el, pageNum: targetPage, layerNum: 0,
@@ -1475,11 +1504,15 @@ export default function App() {
       // inserts can silently drop). Verified per page, since the page loop re-snapshots
       // beforeIds each time it moves on.
       let persistedNew = 0;
-      let pageBudget = 20; // Bounded loop max 20 pages
+      // Bound the page loop so a pathological batch cannot walk the whole note. Hitting this
+      // is reported rather than looking like a normal finish (see budgetExhausted below).
+      let pageBudget = 20;
+      let budgetExhausted = false;
       let stoppedEarlyOutOfSpace = false;
 
       while (i < items.length && pageBudget > 0) {
         pageBudget--;
+        if (pageBudget === 0 && i < items.length) budgetExhausted = true;
 
         let pageWidth = 1404;
         let pageHeight = 1872;
@@ -1756,7 +1789,12 @@ export default function App() {
           }
           currentPage = nextPage;
         } else {
-          // Re-enable ask-then-create when the host implements insertNotePage; see RATTA_REPORT_insertNotePage.md
+          // Guidance modal rather than ask-then-create, by choice for 0.3.0 — NOT a platform
+          // limit. insertNotePage DOES work (verified on Chauvet 3.29.44_beta: pass a rendered
+          // PNG path from generateNoteTemplatePng as `template`; a style name from
+          // getNotePageTemplate fails with 802). An earlier report claimed the host did not
+          // implement it; that was wrong. See reports/0.3.0-insertNotePage-retest-2026-09-03.md.
+          // Converting this flow to ask-then-create is deferred to 0.3.1 (design review D2).
           await askUserConfirmation(
             'Page Full',
             'No more room in this note. Add a new page to the note, then reopen Clipper and tap Insert to continue.',
@@ -1790,6 +1828,15 @@ export default function App() {
       if (i < items.length && splitRemainder[items[i]?.clipId]) {
         ToastAndroid.show(
           'Clip too long for one page — inserted part. Turn to a new page, then Insert again to continue.',
+          ToastAndroid.LONG
+        );
+        PluginManager.closePluginView();
+      } else if (budgetExhausted) {
+        // The page loop hit its bound with clips still queued. Without this the run would
+        // close exactly like a normal finish, so the user would have no idea why the batch
+        // stopped or that tapping Insert again continues it.
+        ToastAndroid.show(
+          'Stopped after 20 pages. The remaining clips are still in Clipper — tap Insert again to continue.',
           ToastAndroid.LONG
         );
         PluginManager.closePluginView();

@@ -2117,6 +2117,43 @@ describe('App Component', () => {
     expect(PluginFileAPI.generateNotePng).not.toHaveBeenCalled();
   });
 
+  it('warns when only some note layers could be captured', async () => {
+    // Compositing what rendered beats failing the capture, but the clip is then missing
+    // content the user can see on the page. Silently handing back an incomplete image is
+    // the same class of bug the layer composite exists to remove, just narrower.
+    const { PluginCommAPI, PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Meeting.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 2 });
+    PluginNoteAPI.generateLayerPreviewImage.mockClear();
+    PluginFileAPI.getLayers.mockResolvedValueOnce({
+      success: true,
+      result: [
+        { layerId: 1, name: 'Layer 1', isVisible: true, isCurrentLayer: true },
+        { layerId: 0, name: 'Main Layer', isVisible: true, isCurrentLayer: false },
+        { layerId: -1, name: 'Background Layer', isVisible: true, isCurrentLayer: false },
+      ],
+    });
+    // Layer 0 renders; layer 1 fails.
+    PluginNoteAPI.generateLayerPreviewImage
+      .mockResolvedValueOnce({ success: true })
+      .mockResolvedValueOnce({ success: false, error: { code: 808, message: 'nope' } })
+      .mockResolvedValue({ success: true });
+
+    ClipService.clearPendingCropShot();
+    jest.spyOn(ClipService, 'waitForPendingCropShot').mockResolvedValue(null);
+    await ClipService.setLaunchMode('crop');
+
+    await renderApp();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(ToastAndroid.show).toHaveBeenCalledWith(
+      'Some note layers could not be captured; the clip may be incomplete.',
+      ToastAndroid.LONG
+    );
+  });
+
   it('skips a hidden layer when compositing a note page', async () => {
     const { PluginCommAPI, PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
     PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Meeting.note' });

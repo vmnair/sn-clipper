@@ -5,6 +5,19 @@ Planned work lives in `design_instance/PERMISSION_UPGRADE_PLAN.md`; items move h
 
 ## [0.3.0] - 2026-08-30
 
+### 2026-09-03 — Polish: auto-trim works for note clips; silent failures now speak; comments restored
+Files: `android/app/src/main/java/com/sn_clipper/ImageCropModule.kt`, `src/App.tsx`, `index.js`, `__tests__/App.test.tsx`
+
+Review decisions D2, D3 and D4 from `design_instance/REVIEW-2026-09-03.md`.
+
+- **Auto-trim never worked for note clips (D3).** `cropImage` advertises trimming empty margins, but `isWhitespace` tested only r/g/b > 245 and ignored alpha. Note captures come back transparent apart from their ink, and a transparent pixel is `(0,0,0,0)` — indistinguishable from black by RGB alone — so the first row scanned read as "not white", the loop broke immediately, and nothing was ever trimmed. Doc captures are opaque white and trimmed correctly, which is why this went unnoticed. Fully transparent pixels now count as whitespace; partially transparent ones are left alone, being the anti-aliased edges of real strokes. **Verified on device (build 335):** the same fixture and crop region that produced a small floating image on build 328 now trims to its content.
+- **The page-loop bound stopped silently (§4.3).** Exhausting `pageBudget` ended the run looking exactly like a normal finish, so a user had no idea why the batch stopped or that tapping Insert again continues it. It now says so, and the clips stay queued as before.
+- **A partial layer capture said nothing (§4.5).** When some of a note page's layers render and others fail, compositing what we have still beats failing the capture — but the clip is then missing content that is visible on the page, which is the same class of silent loss the layer composite exists to remove. It now warns.
+- **Restored on-device calibration comments deleted by the item-8 rewrite (§4.4).** Why `imageLeftInset` is `0.6·fontSize` (measured on Manta), why image size is never upscaled (the note app's OpenCV resize reads past the source bounds and crashes it), and why `getElemBottom` clamps to `pageHeight - 120` (a digitizer-noise guard; strokes are now included deliberately so inserts land below handwriting, with the clamp filtering instead of the old skip-strokes rule). That knowledge had been left only in git history.
+- **Corrected a comment that asserted a platform limitation that does not exist (D2).** `runInsertClips` claimed the host does not implement `insertNotePage`. It does — pass a rendered PNG path from `generateNoteTemplatePng`; a style name from `getNotePageTemplate` fails with 802. The guidance modal is a 0.3.0 choice, not a platform limit, and conversion to ask-then-create is deferred to 0.3.1. That comment was the vector by which the wrong conclusion propagated into the release plan.
+- Removed an unused `isNoteFile` import from `index.js` (§4.6).
+- 150/150 tests passing; the new partial-layer warning has a regression test that fails with the warning removed.
+
 ### 2026-09-02 — Fix: Note region capture dropped content on non-main layers
 Files: `src/App.tsx`, `android/app/src/main/java/com/sn_clipper/ImageCropModule.kt`, `__tests__/App.test.tsx`
 

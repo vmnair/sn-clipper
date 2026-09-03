@@ -6,7 +6,7 @@ import App from './src/App';
 import {name as appName} from './app.json';
 import {PluginManager, PluginDocAPI, PluginCommAPI} from 'sn-plugin-lib';
 import {ClipService} from './src/services/ClipService';
-import {deriveArticleName, isNoteFile, isDocFile} from './src/utils/paths';
+import {deriveArticleName, isDocFile} from './src/utils/paths';
 import {PermissionService, FILE_READ} from './src/services/PermissionService';
 
 const { ImageCropModule } = NativeModules;

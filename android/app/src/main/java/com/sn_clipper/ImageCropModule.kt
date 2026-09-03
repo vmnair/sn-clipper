@@ -226,6 +226,15 @@ class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
         var bottom = imgHeight - 1
 
         fun isWhitespace(color: Int): Boolean {
+            // Fully transparent counts as empty. Note captures come back transparent apart from
+            // their ink (the host renders content layers that way), so without this the very
+            // first row scanned reads as "not white" -- a transparent pixel is (0,0,0,0), which
+            // is indistinguishable from black by RGB alone -- the loop breaks immediately, and
+            // the trim silently does nothing for every note clip while working fine for the
+            // opaque-white doc captures. Partially transparent pixels are left alone: those are
+            // the anti-aliased edges of real strokes.
+            val a = (color ushr 24) and 0xff
+            if (a == 0) return true
             val r = (color shr 16) and 0xff
             val g = (color shr 8) and 0xff
             val b = color and 0xff
