@@ -5,6 +5,16 @@ Planned work lives in `design_instance/PERMISSION_UPGRADE_PLAN.md`; items move h
 
 ## [0.3.0] - 2026-08-30
 
+### 2026-09-02 — Fix: Note region capture dropped content on non-main layers
+Files: `src/App.tsx`, `android/app/src/main/java/com/sn_clipper/ImageCropModule.kt`, `__tests__/App.test.tsx`
+
+- `generateLayerPreviewImage(file, page, 0, out)` renders **one** layer. A Standard note can carry ink on layers other than the main one, so capturing layer 0 alone silently dropped it. **Confirmed on-device (build 327):** a fixture with a `Main Layer 0` text box on the main layer and pen ink on Layer 1 produced a clip containing the text and none of the ink — verified on PNGs pulled off the device, not on a screenshot.
+- Diagnostic build established the facts the fix needed, all on-device: `getLayers` returns only the layers that exist, as `{layerId, name, isVisible, isCurrentLayer}` with **no** `isBackgroundLayer` flag, so `layerId` is the only way to identify the template; `layer: -1` renders the **background template alone** (so it is not an "all layers" shortcut) and comes back **opaque white**, while content layers come back **fully transparent** except for their ink; and `layer: 2`/`3` on a page that lacks them fail with code 808 rather than rendering empty.
+- Fix: enumerate with `PluginFileAPI.getLayers`, keep visible layers with `layerId >= 0` (excluding -1, the template), render each to its own PNG and flatten them bottom-up via a new native `ImageCropModule.compositeImages(paths, destPath)` — a plain source-over draw onto one ARGB canvas, which is correct precisely because the layer renders are transparent. Output keeps its alpha so the crop and insert paths downstream see the same kind of image they always did.
+- Deliberately unchanged in the common case: a page with a single content layer renders straight to the destination with no compositing, so notes that only use the main layer (all 31 on the test device) gain no new failure mode. Falls back to the bottom content layer if compositing fails, and to layer 0 if `getLayers` is unavailable, so an older host cannot end up with no capture at all.
+- **Verified on-device (build 328):** the same fixture now captures both the Layer 1 ink and the Main Layer text, with the ruled template still correctly excluded — confirmed in the crop overlay, in the saved clip, and finally on the exported PNG pulled off the device. 149/149 tests passing.
+- Also reconfirmed on 327 for the Ratta report: `generateNotePng` with `type: 0` still composites the page template.
+
 ### 2026-09-01 — Fix: Auto-remove could delete clips whose inserts never landed
 Files: `src/App.tsx`, `__tests__/App.test.tsx`
 

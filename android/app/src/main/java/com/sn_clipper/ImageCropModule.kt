@@ -8,7 +8,9 @@ import com.facebook.react.bridge.Arguments
 import android.graphics.BitmapRegionDecoder
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Rect
+import com.facebook.react.bridge.ReadableArray
 import java.io.FileOutputStream
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -72,6 +74,76 @@ class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Flattens several PNGs into one, drawn in the order given (first = bottom).
+     *
+     * Used for note pages with more than one content layer: the host renders one layer at a
+     * time (generateLayerPreviewImage takes a single layer index), so a multi-layer page has
+     * to be reassembled here. The layer PNGs come back with a fully transparent background
+     * and opaque ink — verified on-device: alpha is 0 everywhere except the strokes — so a
+     * plain source-over draw is the correct blend and no colour keying is needed.
+     *
+     * The output keeps its alpha, matching what a single-layer render produces, so the crop
+     * and insert paths downstream see exactly the shape of image they already handled.
+     * Resolves false when nothing could be decoded, so the caller can fall back.
+     */
+    @ReactMethod
+    fun compositeImages(paths: ReadableArray, destPath: String, promise: Promise) {
+        var canvasBitmap: Bitmap? = null
+        try {
+            val cleanDestPath = if (destPath.startsWith("file://")) destPath.substring(7) else destPath
+
+            // Size the canvas to the largest layer rather than assuming they all match.
+            var maxWidth = 0
+            var maxHeight = 0
+            val cleanPaths = ArrayList<String>()
+            for (i in 0 until paths.size()) {
+                val raw = paths.getString(i) ?: continue
+                val clean = if (raw.startsWith("file://")) raw.substring(7) else raw
+                if (!File(clean).exists()) continue
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(clean, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) continue
+                maxWidth = Math.max(maxWidth, bounds.outWidth)
+                maxHeight = Math.max(maxHeight, bounds.outHeight)
+                cleanPaths.add(clean)
+            }
+
+            if (cleanPaths.isEmpty() || maxWidth <= 0 || maxHeight <= 0) {
+                promise.resolve(false)
+                return
+            }
+
+            canvasBitmap = Bitmap.createBitmap(maxWidth, maxHeight, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(canvasBitmap)
+            var drawn = 0
+            for (clean in cleanPaths) {
+                val layer = BitmapFactory.decodeFile(clean) ?: continue
+                canvas.drawBitmap(layer, 0f, 0f, null)
+                layer.recycle()
+                drawn++
+            }
+
+            if (drawn == 0) {
+                promise.resolve(false)
+                return
+            }
+
+            val destFile = File(cleanDestPath)
+            destFile.parentFile?.mkdirs()
+            FileOutputStream(destFile).use { out ->
+                canvasBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                out.flush()
+            }
+
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("COMPOSITE_FAILED", e.message, e)
+        } finally {
+            canvasBitmap?.recycle()
         }
     }
 

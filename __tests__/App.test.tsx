@@ -73,6 +73,7 @@ jest.mock('react-native', () => {
       ImageCropModule: {
         cropImage: jest.fn().mockResolvedValue(true),
         openFileDirectly: jest.fn().mockResolvedValue(true),
+        compositeImages: jest.fn().mockResolvedValue(true),
       },
     },
     AppState: {
@@ -115,6 +116,7 @@ jest.mock('sn-plugin-lib', () => ({
     insertNotePage: jest.fn().mockResolvedValue({ success: true, result: true }),
     getNotePageTemplate: jest.fn().mockResolvedValue({ success: true, result: { name: 'style_5mm_dots' } }),
     getPathEncryptionStatus: jest.fn().mockResolvedValue({ success: true, result: 0 }),
+    getLayers: jest.fn().mockResolvedValue({ success: false, error: { code: 808, message: 'not mocked' } }),
   },
   PluginDocAPI: {
     generateCurrentDocImage: jest.fn().mockResolvedValue({ success: true }),
@@ -1968,6 +1970,7 @@ describe('App Component', () => {
     FileUtils.listFiles.mockResolvedValue([
       '/sdcard/Supernote/Plugins/SnClipper/reader_shot_1000000000000.png',
       '/sdcard/Supernote/Plugins/SnClipper/temp_crop_page_1000000000000.png',
+      '/sdcard/Supernote/Plugins/SnClipper/temp_layer_1_1000000000000.png',
       '/sdcard/Supernote/Plugins/SnClipper/clip_1000000000000.png',
       '/sdcard/Supernote/Plugins/SnClipper/unrelated.png',
     ]);
@@ -1977,6 +1980,9 @@ describe('App Component', () => {
     // Only transient captures are swept.
     expect(deleteSpy).toHaveBeenCalledWith('/sdcard/Supernote/Plugins/SnClipper/reader_shot_1000000000000.png');
     expect(deleteSpy).toHaveBeenCalledWith('/sdcard/Supernote/Plugins/SnClipper/temp_crop_page_1000000000000.png');
+    // Per-layer renders from a multi-layer note capture are transient too: they are flattened
+    // into the crop page and deleted immediately, so any left on disk were orphaned by a crash.
+    expect(deleteSpy).toHaveBeenCalledWith('/sdcard/Supernote/Plugins/SnClipper/temp_layer_1_1000000000000.png');
     // clip_* files are user data (image-clip backing images) and must NEVER be swept, even when
     // stale — deleting them left blank-image clips (data loss).
     expect(deleteSpy).not.toHaveBeenCalledWith('/sdcard/Supernote/Plugins/SnClipper/clip_1000000000000.png');
@@ -2067,6 +2073,134 @@ describe('App Component', () => {
 
     const workspace = root.root.find((el) => typeof el.props.onLayout === 'function');
     expect(workspace).toBeTruthy();
+  });
+
+  it('composites every visible content layer when a note page uses more than one', async () => {
+    // A Standard note can carry ink on layers other than the main one. Rendering layer 0
+    // alone silently drops it (confirmed on-device), so every visible content layer is
+    // rendered and stacked. layerId -1 is the Background Layer — the page template, which
+    // renders opaque white — and must never be included.
+    const { PluginCommAPI, PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    const { NativeModules } = require('react-native');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Meeting.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 2 });
+    PluginNoteAPI.generateLayerPreviewImage.mockClear();
+    PluginFileAPI.generateNotePng.mockClear();
+    NativeModules.ImageCropModule.compositeImages.mockClear();
+    // Shape as returned by the host: top layer first, no isBackgroundLayer flag anywhere.
+    PluginFileAPI.getLayers.mockResolvedValueOnce({
+      success: true,
+      result: [
+        { layerId: 1, name: 'Layer 1', isVisible: true, isCurrentLayer: true },
+        { layerId: 0, name: 'Main Layer', isVisible: true, isCurrentLayer: false },
+        { layerId: -1, name: 'Background Layer', isVisible: true, isCurrentLayer: false },
+      ],
+    });
+
+    ClipService.clearPendingCropShot();
+    jest.spyOn(ClipService, 'waitForPendingCropShot').mockResolvedValue(null);
+    await ClipService.setLaunchMode('crop');
+
+    await renderApp();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const layerArgs = (PluginNoteAPI.generateLayerPreviewImage as jest.Mock).mock.calls;
+    expect(layerArgs.map((c) => c[2])).toEqual([0, 1]); // bottom-up, template excluded
+    expect(layerArgs.every((c) => c[0] === '/sdcard/Notes/Meeting.note' && c[1] === 2)).toBe(true);
+    // Each layer goes to its own file, then they are flattened into one.
+    expect(new Set(layerArgs.map((c) => c[3])).size).toBe(2);
+    expect(NativeModules.ImageCropModule.compositeImages).toHaveBeenCalledTimes(1);
+    const [paths] = (NativeModules.ImageCropModule.compositeImages as jest.Mock).mock.calls[0];
+    expect(paths).toEqual([layerArgs[0][3], layerArgs[1][3]]);
+    expect(PluginFileAPI.generateNotePng).not.toHaveBeenCalled();
+  });
+
+  it('skips a hidden layer when compositing a note page', async () => {
+    const { PluginCommAPI, PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Meeting.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 2 });
+    PluginNoteAPI.generateLayerPreviewImage.mockClear();
+    PluginFileAPI.getLayers.mockResolvedValueOnce({
+      success: true,
+      result: [
+        { layerId: 2, name: 'Layer 2', isVisible: false, isCurrentLayer: false },
+        { layerId: 1, name: 'Layer 1', isVisible: true, isCurrentLayer: true },
+        { layerId: 0, name: 'Main Layer', isVisible: true, isCurrentLayer: false },
+        { layerId: -1, name: 'Background Layer', isVisible: true, isCurrentLayer: false },
+      ],
+    });
+
+    ClipService.clearPendingCropShot();
+    jest.spyOn(ClipService, 'waitForPendingCropShot').mockResolvedValue(null);
+    await ClipService.setLaunchMode('crop');
+
+    await renderApp();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // Layer 2 is hidden in the note, so it is not part of what the user sees or clips.
+    expect((PluginNoteAPI.generateLayerPreviewImage as jest.Mock).mock.calls.map((c) => c[2])).toEqual([0, 1]);
+  });
+
+  it('falls back to the bottom content layer when compositing fails', async () => {
+    // Better a main-layer-only capture than an error: the user still gets their clip.
+    const { PluginCommAPI, PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    const { NativeModules } = require('react-native');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Meeting.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 2 });
+    PluginNoteAPI.generateLayerPreviewImage.mockClear();
+    PluginFileAPI.generateNotePng.mockClear();
+    NativeModules.ImageCropModule.compositeImages.mockClear();
+    NativeModules.ImageCropModule.compositeImages.mockResolvedValueOnce(false);
+    PluginFileAPI.getLayers.mockResolvedValueOnce({
+      success: true,
+      result: [
+        { layerId: 1, name: 'Layer 1', isVisible: true, isCurrentLayer: true },
+        { layerId: 0, name: 'Main Layer', isVisible: true, isCurrentLayer: false },
+        { layerId: -1, name: 'Background Layer', isVisible: true, isCurrentLayer: false },
+      ],
+    });
+
+    ClipService.clearPendingCropShot();
+    jest.spyOn(ClipService, 'waitForPendingCropShot').mockResolvedValue(null);
+    await ClipService.setLaunchMode('crop');
+
+    await renderApp();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const calls = (PluginNoteAPI.generateLayerPreviewImage as jest.Mock).mock.calls;
+    // Two per-layer renders, then a third straight to the destination as the fallback.
+    expect(calls.map((c) => c[2])).toEqual([0, 1, 0]);
+    expect(PluginFileAPI.generateNotePng).not.toHaveBeenCalled();
+  });
+
+  it('renders the main layer alone when getLayers is unavailable', async () => {
+    // An older or stricter host may not answer getLayers; behaviour must not regress to
+    // "no capture" — it falls back to exactly what it did before layers were considered.
+    const { PluginCommAPI, PluginNoteAPI, PluginFileAPI } = require('sn-plugin-lib');
+    const { NativeModules } = require('react-native');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Meeting.note' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 2 });
+    PluginNoteAPI.generateLayerPreviewImage.mockClear();
+    NativeModules.ImageCropModule.compositeImages.mockClear();
+    PluginFileAPI.getLayers.mockRejectedValueOnce(new Error('not implemented'));
+
+    ClipService.clearPendingCropShot();
+    jest.spyOn(ClipService, 'waitForPendingCropShot').mockResolvedValue(null);
+    await ClipService.setLaunchMode('crop');
+
+    await renderApp();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect((PluginNoteAPI.generateLayerPreviewImage as jest.Mock).mock.calls.map((c) => c[2])).toEqual([0]);
+    expect(NativeModules.ImageCropModule.compositeImages).not.toHaveBeenCalled();
   });
 
   it('falls back to generateNotePng when generateLayerPreviewImage fails for a note file', async () => {

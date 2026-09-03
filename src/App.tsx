@@ -37,8 +37,9 @@ const pluginConfig = require('../PluginConfig.json');
 const BUILD_LABEL = `v${pluginConfig.versionName} (build ${pluginConfig.versionCode})`;
 
 // Best-effort cleanup of transient capture PNGs orphaned by a crash. Full-screen reader
-// shots (reader_shot_*) and temp page renders (temp_crop_page_*) are consumed within
-// seconds; saved clip images (clip_*) are kept only while a clip references them. Runs once
+// shots (reader_shot_*), temp page renders (temp_crop_page_*) and the per-layer renders a
+// multi-layer note capture flattens (temp_layer_*) are all consumed within seconds; saved
+// clip images (clip_*) are kept only while a clip references them. Runs once
 // on launch and only touches files older than CAPTURE_STALE_MS, so it can never race an
 // in-flight capture or a just-saved clip.
 const CAPTURE_STALE_MS = 5 * 60 * 1000;
@@ -58,7 +59,8 @@ async function sweepOrphanCaptures(): Promise<void> {
       // images of image clips), already deleted by ClipService.deleteClips when a clip is
       // removed. Sweeping them here previously deleted LIVE clip images whenever the clip list
       // was momentarily empty at mount, leaving blank-image clips (data loss).
-      const isTransient = name.startsWith('reader_shot_') || name.startsWith('temp_crop_page_');
+      const isTransient = name.startsWith('reader_shot_') || name.startsWith('temp_crop_page_')
+        || name.startsWith('temp_layer_');
       if (!isTransient) continue;
 
       const tsMatch = name.match(/(\d{10,})/); // embedded Date.now() (13 digits)
@@ -801,6 +803,27 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
+  // Visible content layers of a note page, bottom-most first, for the capture composite.
+  //
+  // Excludes layerId -1 (the Background Layer): that is the page template, it renders opaque
+  // white, and including it would both reintroduce the ruled lines we removed and hide every
+  // layer stacked under it. Returns [0] when the layer list is unavailable, so a host that
+  // does not answer getLayers keeps the previous single-layer behaviour.
+  const getVisibleContentLayerIds = async (notePath: string, page: number): Promise<number[]> => {
+    try {
+      const { PluginFileAPI } = require('sn-plugin-lib');
+      const res = await PluginFileAPI.getLayers(notePath, page) as any;
+      if (res && res.success && Array.isArray(res.result)) {
+        const ids = res.result
+          .filter((l: any) => l && typeof l.layerId === 'number' && l.layerId >= 0 && l.isVisible !== false)
+          .map((l: any) => l.layerId as number)
+          .sort((a: number, b: number) => a - b);
+        if (ids.length > 0) return ids;
+      }
+    } catch (e) { /* fall through to the main layer alone */ }
+    return [0];
+  };
+
   // Custom Page Cropping Logic & Coordinates Scaling
   const handleStartCropping = async (targetPath?: string, targetPage?: number) => {
     const file = targetPath || currentFilePath;
@@ -853,7 +876,7 @@ export default function App() {
     }
 
     try {
-      const { PluginFileAPI, PluginDocAPI, PluginNoteAPI } = require('sn-plugin-lib');
+      const { PluginFileAPI, PluginDocAPI, PluginNoteAPI, FileUtils: FileUtilsForCleanup } = require('sn-plugin-lib');
       const pluginDir = await PluginManager.getPluginDirPath();
       if (!pluginDir) {
         ToastAndroid.show('Storage error: Cannot access plugin folder.', ToastAndroid.SHORT);
@@ -877,13 +900,67 @@ export default function App() {
       // a different message from a genuine render failure.
       let genRes: any = null;
       if (isNote) {
-        // generateLayerPreviewImage renders only the handwriting/element layer, without the
-        // page's background template (ruled lines, dot grid). generateNotePng bakes the
-        // template into the PNG regardless of its `type` param on this firmware (confirmed
-        // on-device: type:0 "transparent background" still produced ruled lines) — see
-        // design_instance/current_status.md.
-        genRes = await PluginNoteAPI.generateLayerPreviewImage(file, pg, 0, tempPath) as any;
-        success = genRes && genRes.success;
+        // generateLayerPreviewImage renders ONE layer, without the page's background
+        // template (ruled lines, dot grid). generateNotePng would give us every layer at
+        // once but bakes the template in regardless of its `type` param on this firmware
+        // (confirmed on-device: type:0 "transparent background" still produced ruled
+        // lines), so it stays a last-resort fallback only.
+        //
+        // A Standard note can carry ink on layers other than the main one, and rendering
+        // layer 0 alone silently drops it (confirmed on-device: ink on Layer 1 was absent
+        // from the capture while Main Layer content survived). So enumerate the layers and
+        // composite every visible content layer.
+        //
+        // Layer ids from getLayers: -1 is the Background Layer (the template — it renders
+        // OPAQUE white and would hide everything under it, so it must be excluded), 0 is
+        // the Main Layer, 1..3 are the extra layers. Content layers render with a fully
+        // transparent background, which is why they can simply be stacked. getLayers only
+        // reports layers that exist, and it carries no isBackgroundLayer flag, so the id is
+        // the only way to spot the template.
+        const contentLayerIds = await getVisibleContentLayerIds(file, pg);
+
+        if (contentLayerIds.length <= 1) {
+          // The overwhelmingly common case (a note that only uses its main layer): render
+          // straight to the destination, exactly as before, and involve no compositing.
+          genRes = await PluginNoteAPI.generateLayerPreviewImage(
+            file, pg, contentLayerIds.length === 1 ? contentLayerIds[0] : 0, tempPath,
+          ) as any;
+          success = genRes && genRes.success;
+        } else {
+          const layerPaths: string[] = [];
+          for (const layerId of contentLayerIds) {
+            const layerPath = `${pluginDir}/temp_layer_${layerId}_${Date.now()}.png`;
+            try {
+              const layerRes = await PluginNoteAPI.generateLayerPreviewImage(file, pg, layerId, layerPath) as any;
+              if (layerRes && layerRes.success) {
+                layerPaths.push(layerPath);
+              } else if (layerRes) {
+                genRes = layerRes; // keep the failure so a 1503 still reports as a permission error
+              }
+            } catch (e) { /* skip this layer; a partial composite beats no capture */ }
+          }
+
+          if (layerPaths.length > 0) {
+            const { NativeModules: RN } = require('react-native');
+            const Compositor = RN && RN.ImageCropModule;
+            if (Compositor && typeof Compositor.compositeImages === 'function') {
+              try {
+                // Ordered bottom-up by layer id, so higher layers draw over lower ones.
+                success = !!(await Compositor.compositeImages(layerPaths, tempPath));
+              } catch (e) { success = false; }
+            }
+            if (!success) {
+              // Compositing unavailable or failed — fall back to the bottom-most layer so
+              // the user still gets a capture rather than an error.
+              genRes = await PluginNoteAPI.generateLayerPreviewImage(file, pg, contentLayerIds[0], tempPath) as any;
+              success = genRes && genRes.success;
+            }
+            for (const layerPath of layerPaths) {
+              try { await FileUtilsForCleanup.deleteFile(layerPath); } catch (e) { /* best-effort */ }
+            }
+          }
+        }
+
         if (!success) {
           genRes = await PluginFileAPI.generateNotePng({
             notePath: file,
