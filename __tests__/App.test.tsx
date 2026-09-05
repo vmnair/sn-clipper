@@ -6,6 +6,7 @@ import { StorageService, ClipItem } from '../src/services/StorageService';
 import { Clipboard, ToastAndroid, Text, Pressable, TextInput } from 'react-native';
 import { PluginManager } from 'sn-plugin-lib';
 import { ConfirmationDialog } from '../src/components/ConfirmationDialog';
+import { IndexService } from '../src/services/IndexService';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
   let store: Record<string, string> = {};
@@ -47,6 +48,11 @@ jest.mock('react-native', () => {
     Text: 'Text',
     Pressable: 'Pressable',
     TextInput: 'TextInput',
+    // The ToC progress overlay renders these; without them any test that puts the app into
+    // "generating" state crashes with "Element type is invalid", which is why that path had
+    // no coverage until the overlay was found blocking the add-pages dialog on device.
+    Modal: ({ visible, children }: any) => (visible ? children : null),
+    ActivityIndicator: 'ActivityIndicator',
     StyleSheet: {
       create: (styles: any) => styles,
     },
@@ -2115,6 +2121,65 @@ describe('App Component', () => {
     const [paths] = (NativeModules.ImageCropModule.compositeImages as jest.Mock).mock.calls[0];
     expect(paths).toEqual([layerArgs[0][3], layerArgs[1][3]]);
     expect(PluginFileAPI.generateNotePng).not.toHaveBeenCalled();
+  });
+
+  it('hides the ToC progress overlay while asking to add pages', async () => {
+    // The progress overlay is a <Modal>, so it renders above the ConfirmationDialog and
+    // swallows every touch. Leaving it up during the question left the build hung on a
+    // dialog the user could not answer -- found on device, build 336.
+    const { PluginCommAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Notes/Big.note' });
+    // Earlier tests leave the launch mode at 'crop'; without resetting it the app renders
+    // the crop overlay instead of the dashboard.
+    await ClipService.setLaunchMode('normal');
+    await StorageService.setEnableToc(true);
+
+    // Hold the build open so the overlay is genuinely on screen when the question is asked.
+    let capturedOnNeedPages: any = null;
+    let finishBuild: any = null;
+    const spy = jest.spyOn(IndexService, 'generateTocPage').mockImplementation(
+      ((_path: any, _font: any, _onPhase: any, onNeedPages: any) => {
+        capturedOnNeedPages = onNeedPages;
+        return new Promise((resolve) => { finishBuild = resolve; });
+      }) as any,
+    );
+
+    const root = await renderApp();
+    const tocTab = root.root.find((el: any) =>
+      el.props.onPress &&
+      el.findAllByType(Text).some((t: any) => Array.isArray(t.props.children) && t.props.children.join('').includes('ToC (')),
+    );
+    await act(async () => { tocTab.props.onPress(); });
+    const buildBtn = root.root.findByProps({ label: '📖 Build ToC on current page' });
+
+    await act(async () => {
+      buildBtn.props.onPress();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    // Overlay is up during the build.
+    expect(root.root.findAllByProps({ children: 'Scanning headings…' }).length).toBeGreaterThan(0);
+    expect(capturedOnNeedPages).toBeTruthy();
+
+    let answer: any;
+    await act(async () => {
+      answer = capturedOnNeedPages(2);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const dialog = root.root.findByType(ConfirmationDialog);
+    expect(dialog.props.visible).toBe(true);
+    expect(dialog.props.title).toBe('More pages needed');
+    expect(dialog.props.description).toContain('2 more pages');
+    // ...and the overlay must be gone, or it covers the dialog and blocks every tap.
+    expect(root.root.findAllByProps({ children: 'Scanning headings…' }).length).toBe(0);
+
+    await act(async () => {
+      dialog.props.onConfirm();
+      await answer;
+      finishBuild({ success: true, message: 'Table of Contents created on page 1.', headings: [] });
+    });
+    expect(await answer).toBe(true);
+    spy.mockRestore();
   });
 
   it('warns when only some note layers could be captured', async () => {

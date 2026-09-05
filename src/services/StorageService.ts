@@ -120,6 +120,43 @@ export class StorageService {
   }
 
   /**
+   * Record how many headings the last SUCCESSFUL ToC build wrote for this note.
+   *
+   * Deliberately separate from the ToC snapshot above, which `clearTocState` wipes as soon
+   * as the ToC lands in the note. This record has to outlive that, because it is the only
+   * baseline the next build can compare against when deciding whether the scan has
+   * silently lost headings (device matrix 2026-09-04 §7).
+   */
+  static async setTocLastBuild(notePath: string, count: number): Promise<void> {
+    try {
+      if (!notePath) return;
+      await AsyncStorage.setItem(
+        `clipper_toc_lastbuild_${notePath}`,
+        JSON.stringify({ count, at: Date.now() }),
+      );
+    } catch (e) {
+      console.error('Failed to save ToC last-build record:', e);
+    }
+  }
+
+  /** Heading count of the last successful build for this note, or null if never built. */
+  static async getTocLastBuild(notePath: string): Promise<{ count: number; at: number } | null> {
+    try {
+      if (!notePath) return null;
+      const data = await AsyncStorage.getItem(`clipper_toc_lastbuild_${notePath}`);
+      if (data) {
+        const parsed = JSON.parse(data);
+        if (parsed && typeof parsed.count === 'number') {
+          return { count: parsed.count, at: typeof parsed.at === 'number' ? parsed.at : 0 };
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load ToC last-build record:', e);
+    }
+    return null;
+  }
+
+  /**
    * Load the last-built Table of Contents snapshot for a note, or null if none exists.
    */
   static async getTocState(notePath: string): Promise<TocState | null> {

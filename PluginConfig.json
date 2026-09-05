@@ -3,7 +3,7 @@
   "desc": "Collect, aggregate and manage text highlights from e-books and PDFs. Paste compiled text into your notes and digests.",
   "iconPath": "assets/icon/icon.png",
   "versionName": "0.3.0",
-  "versionCode": "335",
+  "versionCode": "346",
   "pluginID": "yz6g3rirgcavgon9",
   "pluginKey": "SnClipper",
   "jsMainPath": "index",

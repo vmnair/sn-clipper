@@ -32,13 +32,15 @@ import { PermissionService, FILE_READ, FILE_WRITE } from './services/PermissionS
 import { ClipList } from './components/ClipList';
 import { deriveArticleName, isDocFile, isNoteFile as checkIsNoteFile } from './utils/paths';
 import { splitTextToFit, countWrappedLines, measureWrappedText } from './utils/text';
+import { pollForTargetPage } from './utils/pageNav';
 // Bundled at build time; versionCode is auto-incremented by buildPlugin.sh before bundling.
 const pluginConfig = require('../PluginConfig.json');
 const BUILD_LABEL = `v${pluginConfig.versionName} (build ${pluginConfig.versionCode})`;
 
 // Best-effort cleanup of transient capture PNGs orphaned by a crash. Full-screen reader
 // shots (reader_shot_*), temp page renders (temp_crop_page_*) and the per-layer renders a
-// multi-layer note capture flattens (temp_layer_*) are all consumed within seconds; saved
+// multi-layer note capture flattens (temp_layer_*), and the page templates the ToC renders
+// to create pages (tpl_*) are all consumed within seconds; saved
 // clip images (clip_*) are kept only while a clip references them. Runs once
 // on launch and only touches files older than CAPTURE_STALE_MS, so it can never race an
 // in-flight capture or a just-saved clip.
@@ -60,7 +62,7 @@ async function sweepOrphanCaptures(): Promise<void> {
       // removed. Sweeping them here previously deleted LIVE clip images whenever the clip list
       // was momentarily empty at mount, leaving blank-image clips (data loss).
       const isTransient = name.startsWith('reader_shot_') || name.startsWith('temp_crop_page_')
-        || name.startsWith('temp_layer_');
+        || name.startsWith('temp_layer_') || name.startsWith('tpl_');
       if (!isTransient) continue;
 
       const tsMatch = name.match(/(\d{10,})/); // embedded Date.now() (13 digits)
@@ -1389,30 +1391,6 @@ export default function App() {
         return bottom;
       };
 
-      const pollForTargetPage = async (targetPage: number, timeoutMs = 4000): Promise<boolean> => {
-        const start = Date.now();
-        let lastJumpTime = 0;
-        while (Date.now() - start < timeoutMs) {
-          try {
-            const pageRes = await PluginCommAPI.getCurrentPageNum() as any;
-            if (pageRes && pageRes.success && pageRes.result === targetPage) {
-              await new Promise(r => setTimeout(r, 200)); // 200ms stabilization buffer
-              return true;
-            }
-          } catch (e) {}
-
-          // Active retry: re-issue jumpToPage if target page not reached after 400ms
-          if (Date.now() - lastJumpTime > 500) {
-            try {
-              await PluginCommAPI.jumpToPage(targetPage);
-              lastJumpTime = Date.now();
-            } catch (e) {}
-          }
-
-          await new Promise(r => setTimeout(r, 150));
-        }
-        return false;
-      };
 
       // Insert an image and position it at the given rect. Supernote's insertImage centers the
       // image by default; the recipe to place it: insert → save → getLastElement → recreate the
@@ -1888,7 +1866,48 @@ export default function App() {
     setTocPhase('scanning');
     setIsGeneratingToc(true);
     try {
-      const res = await IndexService.generateTocPage(currentFilePath, insertFontSize, setTocPhase);
+      const res = await IndexService.generateTocPage(
+        currentFilePath,
+        insertFontSize,
+        setTocPhase,
+        // Asked once per run, only for the shortfall, and only when the headings genuinely
+        // need more room. Declining is a normal answer: the ToC is written as far as it
+        // fits and says so, rather than failing the build.
+        async (pagesNeeded: number) => {
+          // Drop the progress overlay first. It is a <Modal>, so it renders ABOVE the
+          // ConfirmationDialog (a plain View) and swallows every touch — leaving the run
+          // hung on a question the user cannot answer. Restore it afterwards so the rest
+          // of the build still shows progress.
+          setIsGeneratingToc(false);
+          try {
+            return await askUserConfirmation(
+              'More pages needed',
+              `The Table of Contents needs ${pagesNeeded} more page${pagesNeeded === 1 ? '' : 's'}. Add ${pagesNeeded === 1 ? 'it' : 'them'} to this note?`,
+              'Add',
+              'Not now',
+            );
+          } finally {
+            setIsGeneratingToc(true);
+          }
+        },
+        // Heading recognition is not reliably repeatable — the same note scanned 24, 24
+        // then 16 headings on device (2026-09-04 §7) — and a short ToC looks perfectly
+        // normal, so the loss is invisible. Ask before replacing a bigger ToC with a
+        // smaller one. Same overlay dance as above: the Modal would eat the touches.
+        async (found: number, previous: number) => {
+          setIsGeneratingToc(false);
+          try {
+            return await askUserConfirmation(
+              'Fewer headings than last time',
+              `This scan found ${found} headings; the last build found ${previous}. Some titles may not have been recognised. Rebuild anyway, or keep the Table of Contents you have?`,
+              'Rebuild anyway',
+              'Keep existing',
+            );
+          } finally {
+            setIsGeneratingToc(true);
+          }
+        },
+      );
 
       if (res.success) {
         // The ToC now lives in the note — clear the Clipper snapshot so the ToC tab doesn't keep

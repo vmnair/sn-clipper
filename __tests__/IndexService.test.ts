@@ -17,6 +17,8 @@ import { IndexService } from '../src/services/IndexService';
 import { StorageService } from '../src/services/StorageService';
 import { PluginFileAPI, PluginNoteAPI, PluginCommAPI } from 'sn-plugin-lib';
 
+let mockReaderPage = 0;
+
 jest.mock('sn-plugin-lib', () => ({
   PluginFileAPI: {
     getNoteTotalPageNum: jest.fn().mockResolvedValue({ success: true, result: 5 }),
@@ -25,6 +27,8 @@ jest.mock('sn-plugin-lib', () => ({
     getPageSize: jest.fn().mockResolvedValue({ success: true, result: { width: 1404, height: 1872 } }),
     replaceElements: jest.fn().mockResolvedValue({ success: true }),
     deleteElements: jest.fn().mockResolvedValue({ success: true }),
+    generateNoteTemplatePng: jest.fn().mockResolvedValue({ success: true, result: true }),
+    insertNotePage: jest.fn().mockResolvedValue({ success: true, result: true }),
   },
   PluginNoteAPI: {
     saveCurrentNote: jest.fn().mockResolvedValue({ success: true }),
@@ -32,16 +36,30 @@ jest.mock('sn-plugin-lib', () => ({
     insertTextLink: jest.fn().mockResolvedValue({ success: true }),
   },
   PluginCommAPI: {
-    getCurrentPageNum: jest.fn().mockResolvedValue({ success: true, result: 0 }),
+    // Track the page like a real reader: pollForTargetPage waits for getCurrentPageNum to
+    // report the page jumpToPage was asked for. A fixed 0 here never settles, so the
+    // continuation path would just burn the whole settle timeout.
+    getCurrentPageNum: jest.fn().mockImplementation(async () => ({ success: true, result: mockReaderPage })),
+    jumpToPage: jest.fn().mockImplementation(async (p: number) => { mockReaderPage = p; return { success: true, result: true }; }),
     reloadFile: jest.fn().mockResolvedValue({ success: true }),
     recognizeElements: jest.fn().mockResolvedValue({ success: true, result: '' }),
+  },
+  PluginManager: {
+    getPluginDirPath: jest.fn().mockResolvedValue('/sdcard/.data/plugin'),
+  },
+  FileUtils: {
+    deleteFile: jest.fn().mockResolvedValue(true),
   },
 }));
 
 describe('IndexService', () => {
   beforeEach(async () => {
+    mockReaderPage = 0;
     jest.clearAllMocks();
     await require('@react-native-async-storage/async-storage').clear();
+    // Multi-page ToC ships OFF (design review 2026-09-04). Reset per test so a case that
+    // opts into the descoped machinery cannot leak the flag into the next one.
+    IndexService.resetTocPagination();
   });
 
   describe('scanHeadings — adaptive style ranking', () => {
@@ -198,6 +216,333 @@ describe('IndexService', () => {
       expect(row1[0].textContentFull).toMatch(/^1\.1\s+Indented Sublevel/);
       // Level 2 left margin should be greater than Level 1 left margin
       expect(row1[0].textRect.left).toBeGreaterThan(row0[0].textRect.left);
+    });
+
+    // ---- multi-page ToC (item 9) --------------------------------------------------
+    // rowsPerPage on a 1872-tall page at font 36 is well under 60, so 60 headings force
+    // pagination. Each helper below builds however many headings a case needs.
+    const manyHeadings = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ title: `Section ${i + 1}`, page: i + 2, style: 1, Y: 100, X: 50 }));
+
+    it('asks once for the shortfall and creates the pages when confirmed', async () => {
+      // Exercises the pagination machinery, which is descoped for 0.3.0 but kept
+      // behind TOC_PAGINATION and must stay proven for the day it is re-enabled.
+      IndexService.setTocPaginationEnabled(true);
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(60));
+      // Page 0 is the blank ToC target; every later page has content, so none can be
+      // reused and the shortfall is real. totalPages stays large enough for the scan.
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0 ? { success: true, result: [] } : { success: true, result: [{ type: 0 }] }
+      ));
+      const onNeedPages = jest.fn().mockResolvedValue(true);
+
+      const result = await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, onNeedPages);
+
+      expect(result.success).toBe(true);
+      // One dialog for the whole run, not one per page.
+      expect(onNeedPages).toHaveBeenCalledTimes(1);
+      const asked = onNeedPages.mock.calls[0][0];
+      expect(asked).toBeGreaterThan(0);
+      // A page is created per page asked for, and the template is a rendered PNG path --
+      // a style name fails with 802.
+      expect(PluginFileAPI.insertNotePage).toHaveBeenCalledTimes(asked);
+      expect(PluginFileAPI.generateNoteTemplatePng).toHaveBeenCalled();
+      const tplArg = (PluginFileAPI.insertNotePage as jest.Mock).mock.calls[0][0].template;
+      expect(tplArg).toMatch(/\.png$/);
+      expect(tplArg).not.toMatch(/^style_/);
+    });
+
+    it('writes what fits and says so when the user declines', async () => {
+      // Exercises the pagination machinery, which is descoped for 0.3.0 but kept
+      // behind TOC_PAGINATION and must stay proven for the day it is re-enabled.
+      IndexService.setTocPaginationEnabled(true);
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(60));
+      // Page 0 is the blank ToC target; every later page has content, so none can be
+      // reused and the shortfall is real. totalPages stays large enough for the scan.
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0 ? { success: true, result: [] } : { success: true, result: [{ type: 0 }] }
+      ));
+      const onNeedPages = jest.fn().mockResolvedValue(false);
+
+      const result = await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, onNeedPages);
+
+      // Declining never fails the build.
+      expect(result.success).toBe(true);
+      expect(PluginFileAPI.insertNotePage).not.toHaveBeenCalled();
+      const texts = (PluginNoteAPI.insertText as jest.Mock).mock.calls.map((c: any) => c[0].textContentFull);
+      expect(texts.some((t: string) => /^Showing first \d+ of 60 headings$/.test(t))).toBe(true);
+      expect(result.message).toMatch(/showing first \d+ of 60 headings/i);
+    });
+
+    it('never asks when the headings fit on the ToC page', async () => {
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+      const onNeedPages = jest.fn().mockResolvedValue(true);
+
+      await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, onNeedPages);
+
+      expect(onNeedPages).not.toHaveBeenCalled();
+      expect(PluginFileAPI.insertNotePage).not.toHaveBeenCalled();
+    });
+
+    it('shifts heading page references by the number of pages it inserted', async () => {
+      // Exercises the pagination machinery, which is descoped for 0.3.0 but kept
+      // behind TOC_PAGINATION and must stay proven for the day it is re-enabled.
+      IndexService.setTocPaginationEnabled(true);
+      // Inserting ToC continuation pages pushes every later page down. Without the shift
+      // every row would name -- and link to -- a page one short of the real one.
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(60));
+      // Page 0 is the blank ToC target; every later page has content, so none can be
+      // reused and the shortfall is real. totalPages stays large enough for the scan.
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0 ? { success: true, result: [] } : { success: true, result: [{ type: 0 }] }
+      ));
+      const onNeedPages = jest.fn().mockResolvedValue(true);
+
+      const result = await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, onNeedPages);
+      const created = (PluginFileAPI.insertNotePage as jest.Mock).mock.calls.length;
+      expect(created).toBeGreaterThan(0);
+
+      // Section 1 sits on raw page 2, which scanHeadings reports as display page 3
+      // (pageDisplay = rawPg + 1). After inserting `created` pages it must read 3 + created.
+      const first = (result.headings || []).find((h: any) => h.title === 'Section 1');
+      expect(first?.page).toBe(3 + created);
+      const pageNumTexts = (PluginNoteAPI.insertText as jest.Mock).mock.calls
+        .map((c: any) => c[0].textContentFull)
+        .filter((t: string) => /^p\. \d+$/.test(t));
+      expect(pageNumTexts).toContain(`p. ${3 + created}`);
+    });
+
+    it('clears a ToC that spans several pages so a shrinking refresh leaves nothing stale', async () => {
+      // Pages 0 and 1 both hold ToC; the refreshed ToC is short enough for one page.
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        (p === 0 || p === 1)
+          ? { success: true, result: [{ textContentFull: 'TABLE OF CONTENTS' }] }
+          : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getNoteTotalPageNum as jest.Mock).mockResolvedValue({ success: true, result: 5 });
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(2));
+
+      await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36);
+
+      const clearedPages = (PluginFileAPI.replaceElements as jest.Mock).mock.calls.map((c: any) => c[1]);
+      expect(clearedPages).toContain(0);
+      expect(clearedPages).toContain(1); // the stale trailing ToC page
+    });
+
+    it('reads every page it needs BEFORE the first write, and never after', async () => {
+      // Exercises the pagination machinery, which is descoped for 0.3.0 but kept
+      // behind TOC_PAGINATION and must stay proven for the day it is re-enabled.
+      IndexService.setTocPaginationEnabled(true);
+      // The invariant behind review 2026-09-03b decision 1. On device, getElements serves a
+      // stale layout for any non-current page once something has been written, so a read
+      // taken after a write cannot be trusted to decide anything. Everything that informs a
+      // decision -- the target page, reusable pages, pages to clear -- must be read first.
+      const order: string[] = [];
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(60));
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => {
+        order.push(`read:${p}`);
+        return { success: true, result: [] };
+      });
+      (PluginFileAPI.replaceElements as jest.Mock).mockImplementation(async () => {
+        order.push('write:replaceElements'); return { success: true };
+      });
+      (PluginFileAPI.insertNotePage as jest.Mock).mockImplementation(async () => {
+        order.push('write:insertNotePage'); return { success: true, result: true };
+      });
+      (PluginNoteAPI.insertText as jest.Mock).mockImplementation(async () => {
+        order.push('write:insertText'); return { success: true };
+      });
+
+      await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, async () => true);
+
+      const firstWrite = order.findIndex((o) => o.startsWith('write:'));
+      const lastRead = order.reduce((acc, o, i) => (o.startsWith('read:') ? i : acc), -1);
+      expect(firstWrite).toBeGreaterThan(-1); // it did write something
+      expect(lastRead).toBeGreaterThan(-1);   // and it did read something
+      expect(lastRead).toBeLessThan(firstWrite);
+    });
+
+    it('clears a stale ToC page that sits BEYOND user content, without writing past it', async () => {
+      // Review 2026-09-03c Q1. Page 0 = old ToC, page 1 = the user's own page, page 2 = a
+      // stale continuation page from a previous longer ToC. The stale page must still be
+      // cleared -- it carries live-looking jump links with wrong page numbers -- but
+      // nothing may be written past page 1.
+      const toc = [{ textContentFull: 'TABLE OF CONTENTS' }];
+      const userPage = [{ type: 0, maxY: 500 }];
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => {
+        if (p === 0) return { success: true, result: toc };
+        if (p === 1) return { success: true, result: userPage };
+        if (p === 2) return { success: true, result: toc };
+        return { success: true, result: [] };
+      });
+      (PluginFileAPI.getNoteTotalPageNum as jest.Mock).mockResolvedValue({ success: true, result: 5 });
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(60));
+
+      await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, async () => false);
+
+      const cleared = (PluginFileAPI.replaceElements as jest.Mock).mock.calls.map((c: any) => c[1]);
+      expect(cleared).toContain(0); // the ToC being refreshed
+      expect(cleared).toContain(2); // the stale continuation page beyond the user's page
+      expect(cleared).not.toContain(1); // never the user's page
+    });
+
+    it('refuses a target page that mixes ToC rows with user content, and touches nothing', async () => {
+      // Review 2026-09-03c Q2. Previously startHasContent was false whenever a ToC was
+      // present, so the clear removed the user's elements along with our rows.
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0
+          ? { success: true, result: [{ textContentFull: 'TABLE OF CONTENTS' }, { type: 0, maxY: 900 }] }
+          : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+
+      const result = await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36);
+
+      expect(result.success).toBe(false);
+      expect(result.needsBlankPage).toBe(true);
+      expect(result.message).toMatch(/also contains your own content/i);
+      // Nothing was deleted or written.
+      expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
+      expect(PluginFileAPI.deleteElements).not.toHaveBeenCalled();
+      expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
+    });
+
+    // ---- 0.3.0 descope: one page, no page transition (design review 2026-09-04) --------
+    it('writes ONE page and the footer instead of paginating, with the flag off', async () => {
+      // The shipped default. A ToC that would need a second page must never raise the
+      // dialog, never call insertNotePage, and never navigate the reader mid-write — that
+      // navigation is what raced the firmware renderer into a heap-corruption crash.
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(60));
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0 ? { success: true, result: [] } : { success: true, result: [{ type: 0 }] }
+      ));
+      const onNeedPages = jest.fn().mockResolvedValue(true);
+
+      const result = await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, onNeedPages);
+
+      expect(result.success).toBe(true);
+      expect(onNeedPages).not.toHaveBeenCalled();
+      expect(PluginFileAPI.insertNotePage).not.toHaveBeenCalled();
+      // No page transition: the reader is never moved while writing.
+      expect(PluginCommAPI.jumpToPage).not.toHaveBeenCalled();
+      // Only the first page's header is written — no '(cont.)' page.
+      const texts = (PluginNoteAPI.insertText as jest.Mock).mock.calls.map((c: any) => c[0].textContentFull);
+      expect(texts.filter((t: string) => /^TABLE OF CONTENTS/.test(t))).toHaveLength(1);
+      expect(texts.some((t: string) => /^TABLE OF CONTENTS \(cont\.\)$/.test(t))).toBe(false);
+      // ...and the overflow is reported honestly.
+      expect(texts.some((t: string) => /^Showing first \d+ of 60 headings$/.test(t))).toBe(true);
+      // The old "add a page, then Refresh for the rest" advice would be a lie now.
+      expect(result.message).not.toMatch(/add a page/i);
+      expect(result.message).toMatch(/one page is the limit/i);
+    });
+
+    // ---- §5: page-level classification of our own ToC pages ---------------------------
+    // Every element below is one this plugin writes. `isTocElement` only ever matched the
+    // header, so each ROW counted as user content and the mixed-page guard refused every
+    // refresh on device (device matrix 2026-09-04 §5).
+    const ourTocPage = (notePath: string) => ([
+      { textContentFull: 'TABLE OF CONTENTS' },
+      { textContentFull: 'Test  ·  Generated 9/4/2026, 9:57 AM' }, // subtitle
+      { textContentFull: '1. Chapter One ...........................' }, // title + dot leader
+      { textContentFull: 'p. 3' }, // page-number column
+      { showText: '↗', fullText: '↗', destPath: notePath }, // jump link
+      { textContentFull: 'Showing first 21 of 24 headings' }, // truncation footer
+    ]);
+
+    it('classifies a real ToC page — header, subtitle, rows, links, footer — as ours', async () => {
+      const notePath = '/sdcard/Notes/Test.note';
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0 ? { success: true, result: ourTocPage(notePath) } : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+
+      const result = await IndexService.generateTocPage(notePath, 36);
+
+      // It refreshes in place rather than refusing.
+      expect(result.success).toBe(true);
+      expect(result.needsBlankPage).toBeUndefined();
+      expect((PluginFileAPI.replaceElements as jest.Mock).mock.calls.map((c: any) => c[1])).toContain(0);
+    });
+
+    it('refuses the same page once the user adds a single handwritten stroke', async () => {
+      const notePath = '/sdcard/Notes/Test.note';
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0
+          ? { success: true, result: [...ourTocPage(notePath), { type: 0, maxY: 900 }] }
+          : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+
+      const result = await IndexService.generateTocPage(notePath, 36);
+
+      expect(result.success).toBe(false);
+      expect(result.needsBlankPage).toBe(true);
+      expect(result.message).toMatch(/also contains your own content/i);
+      expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
+      expect(PluginFileAPI.deleteElements).not.toHaveBeenCalled();
+      expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
+    });
+
+    it('does not claim an arrow link that points at a different note', async () => {
+      // The ↗ shape alone is not proof of authorship; the destination has to be this note.
+      const notePath = '/sdcard/Notes/Test.note';
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0
+          ? { success: true, result: [
+              { textContentFull: 'TABLE OF CONTENTS' },
+              { showText: '↗', fullText: '↗', destPath: '/sdcard/Notes/SomeOther.note' },
+            ] }
+          : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+
+      const result = await IndexService.generateTocPage(notePath, 36);
+
+      expect(result.success).toBe(false);
+      expect(result.needsBlankPage).toBe(true);
+    });
+
+    // ---- §7: silent heading loss becomes a choice --------------------------------------
+    it('asks before replacing a ToC when the scan finds fewer headings than the last build', async () => {
+      const notePath = '/sdcard/Notes/Test.note';
+      await StorageService.setTocLastBuild(notePath, 24);
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0 ? { success: true, result: ourTocPage(notePath) } : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(16));
+      const onFewerHeadings = jest.fn().mockResolvedValue(false);
+
+      const result = await IndexService.generateTocPage(notePath, 36, undefined, undefined, onFewerHeadings);
+
+      expect(onFewerHeadings).toHaveBeenCalledWith(16, 24);
+      expect(result.success).toBe(false);
+      expect(result.message).toMatch(/kept the existing/i);
+      // Declining must leave the existing ToC completely untouched.
+      expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
+      expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
+    });
+
+    it('does not ask when the scan finds as many headings as before', async () => {
+      const notePath = '/sdcard/Notes/Test.note';
+      await StorageService.setTocLastBuild(notePath, 3);
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+      const onFewerHeadings = jest.fn().mockResolvedValue(true);
+
+      await IndexService.generateTocPage(notePath, 36, undefined, undefined, onFewerHeadings);
+
+      expect(onFewerHeadings).not.toHaveBeenCalled();
+    });
+
+    it('records the scanned heading count, not the number that fitted on the page', async () => {
+      // A one-page cap is a display limit. Recording the truncated count would make the
+      // next build compare against the wrong baseline and never warn.
+      const notePath = '/sdcard/Notes/Test.note';
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(60));
+
+      const result = await IndexService.generateTocPage(notePath, 36);
+
+      expect(result.success).toBe(true);
+      expect(await StorageService.getTocLastBuild(notePath)).toMatchObject({ count: 60 });
     });
 
     it('returns permission error when replaceElements returns code 1501 during ToC refresh', async () => {

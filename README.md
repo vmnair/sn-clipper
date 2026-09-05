@@ -79,6 +79,15 @@ into a note → **settings** to tune insertion.
 - 🔗 **Link source when inserting** *(default: on)*: toggles appending of back-links into notes.
 - 🔠 **Inserted text size**: **Small / Medium / Large**.
 - 📄 **Table of contents**: add a table of contents anywhere in the note, based on handwritten or text headings.
+- 📖 **A table of contents is one page, for now.** If your note has more headings than fit on a
+  single page, Clipper writes the ones that fit and says so at the bottom of the page —
+  *"Showing first 21 of 24 headings"*. Multi-page tables of contents are built and tested but
+  turned off in this release: writing across a page break triggers a crash in the Supernote
+  note app itself, which we cannot fix from a plugin. The feature returns once that firmware
+  issue is resolved. Raising **Inserted text size** to Small fits more headings on the page.
+- 🔎 **If a rebuild finds fewer headings than last time**, Clipper asks before replacing what you
+  have — handwriting recognition is not perfectly repeatable, and a shorter table of contents
+  looks perfectly normal, so it should be your choice rather than a silent loss.
 - 🔄 **Reset to default**: quickly restore all default settings.
 
 ---
@@ -145,6 +154,9 @@ A few things worth knowing:
 
 ## 🗺️ Roadmap
 
+- 📚 **Multi-page Table of Contents**: built and kept behind a flag; disabled because writing
+  across a plugin-created page can crash the note app's renderer on current firmware. Returns
+  when fixed.
 - ✍️ Highlight selections in the document (clipped text isn't highlighted in place yet).
 - 📱 Testing on **Nomad**: I do not own a Nomad, so feedback from Nomad users is very welcome.
 - 🖼️ Investigate export to Supernote Sticker library (`.stk` container generation) for direct sticker re-use across notes.
