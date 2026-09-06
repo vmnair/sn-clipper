@@ -744,7 +744,7 @@ export default function App() {
       setShowConfirmDialog(true);
     } else {
       // Dismissed, or the dialog could not be shown — retrying is worthwhile.
-      ToastAndroid.show(`${action} needs file access — tap again to allow.`, ToastAndroid.LONG);
+      ToastAndroid.show(`${action} needs file access. Tap again to allow.`, ToastAndroid.LONG);
     }
     return false;
   };
@@ -1844,7 +1844,7 @@ export default function App() {
 
       if (i < items.length && splitRemainder[items[i]?.clipId]) {
         ToastAndroid.show(
-          'Clip too long for one page — inserted part. Turn to a new page, then Insert again to continue.',
+          'Clip too long for one page, so part was inserted. Turn to a new page, then Insert again to continue.',
           ToastAndroid.LONG
         );
         PluginManager.closePluginView();
@@ -1853,7 +1853,7 @@ export default function App() {
         // close exactly like a normal finish, so the user would have no idea why the batch
         // stopped or that tapping Insert again continues it.
         ToastAndroid.show(
-          'Stopped after 20 pages. The remaining clips are still in Clipper — tap Insert again to continue.',
+          'Stopped after 20 pages. The remaining clips are still in Clipper; tap Insert again to continue.',
           ToastAndroid.LONG
         );
         PluginManager.closePluginView();
@@ -2230,7 +2230,7 @@ export default function App() {
           <View style={styles.tabViewContainer}>
             <Text style={styles.subtitle}>
               {tocUpdatedAt
-                ? `${headings.length} heading(s) found. The ToC is created on the page you're viewing — open a blank page first (it won't overwrite notes).`
+                ? `${headings.length} heading(s) found. The ToC is created on the page you're viewing, so open a blank page first (it won't overwrite notes).`
                 : 'Open the note to a blank page where you want the ToC, then tap "Build ToC". It writes on the current page and never overwrites existing notes.'}
             </Text>
 
@@ -2424,7 +2424,7 @@ export default function App() {
               </Text>
               <Text style={{ textAlign: 'center', color: '#666', marginTop: 6 }}>
                 {tocPhase === 'recognizing'
-                  ? 'Converting handwritten titles to text — this may take some time.'
+                  ? 'Converting handwritten titles to text. This may take some time.'
                   : 'Reading the note’s titles.'}
               </Text>
             </View>

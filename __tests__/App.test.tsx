@@ -658,7 +658,7 @@ describe('App Component', () => {
     expect(sentences.startsWith(inserted)).toBe(true); // leading chunk
 
     expect(ToastAndroid.show).toHaveBeenCalledWith(
-      'Clip too long for one page — inserted part. Turn to a new page, then Insert again to continue.',
+      'Clip too long for one page, so part was inserted. Turn to a new page, then Insert again to continue.',
       ToastAndroid.LONG
     );
 

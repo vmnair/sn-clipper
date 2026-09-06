@@ -18,7 +18,7 @@ I built it to solve a workflow problem: adding a series of selected passages to 
 digest app, which broke focus. Clipper lets you **capture as you read** and **paste the
 aggregated result in one step**.
 
-> ⚠️ **Beta: use at your own risk. No warranty.** Tested on Manta (A5X2), Chauvet 3.29.43_beta; not yet tested on Nomad.
+> ⚠️ **Beta: use at your own risk. No warranty.** Tested on Manta (A5X2), Chauvet 3.29.44_beta; not yet tested on Nomad.
 
 > 📌 **Firmware requirement:** Clipper v0.2.0 and later require the Supernote plugin beta firmware (Chauvet 3.29.43_beta or newer). That firmware also refuses to run older Clipper builds, so if you update your Supernote, update Clipper too.
 
@@ -35,7 +35,7 @@ into a note → **settings** to tune insertion.
 - 🖍️ **Highlight → Clip (text).** Select text in a document and tap **Clip** on the selection toolbar. Each clip is labelled with its source file. A longer selection is saved **silently as text**: no dialog, so you stay in the flow of reading.
 - 🔀 **Text vs Region prompt.** A short selection opens a prompt to pick **Clip Text** or **Clip Region** (a short highlight is the natural way to "mark this spot" for a figure).
 - 🖼️ **WYSIWYG Image Capture.** Region capture captures the **live, on-screen reader page**, reproducing exactly what you see, including **reflowable EPUB** at your chosen font, not just fixed-layout PDF.
-- 📚 **Works across formats.** Text and region clipping from **PDF, EPUB, TXT, CBZ, FB2**, and notes.
+- 📚 **Works across formats.** Text and region clipping from **PDF, EPUB, TXT, CBZ, FB2**, and **notes (New in 0.3.0)**: you can now clip a diagram or block of handwriting straight out of a `.note` page.
 
 ### 🗂️ The Clipper dashboard
 
@@ -68,29 +68,39 @@ into a note → **settings** to tune insertion.
   the rest continues on the next page.
 - 🖼️ **Multiple figures (region clips) can be inserted into a page.** The previous limitation of one page, one image has been lifted.
 - 🔄 **Auto-continue across existing pages (New in 0.3.0).** When an insert batch overflows the current page, Clipper automatically navigates to subsequent existing pages and continues placing clips seamlessly.
-- 🛑 **Page Full guidance.** When reaching the final page of a note with clips remaining, Clipper prompts you with a **Page Full** message to tap `+` in the note toolbar to add a page. Uninserted clips remain queued so tapping Insert on the new page resumes seamlessly. *(Automatic in-note page creation will return when firmware implements `insertNotePage`)*.
+- 🛑 **Page Full guidance.** When reaching the final page of a note with clips remaining, Clipper prompts you with a **Page Full** message to tap `+` in the note toolbar to add a page. *(Having Clipper add the page for you is planned for a future release.)*
+
+  > ⚠️ **Resuming depends on "Remove clips after inserting".**
+  > With it **on** (the default), the clips and part-clips already placed are removed as you
+  > go, so tapping Insert on the new page **continues where it stopped**, including part-way
+  > through a long clip that was split across the break.
+  > With it **off**, nothing is removed, so the list still holds everything: tapping Insert on
+  > the new page starts again **from the beginning** and **repeats what was already inserted**.
+  > Turn it on if you are inserting a batch too big for one page.
 
 ### ⚙️ Settings (gear icon)
 
 - 🧹 **Remove clips after inserting** *(default: on)*: delete clips once inserted, or keep them
-  (e.g. to insert the same set into several notes).
+  (e.g. to insert the same set into several notes). **Turning this off also turns off resuming**:
+  an insert that stops at Page Full will start from the beginning next time, repeating what
+  it already placed. See the Page Full note above.
 - 🧱 **Combine inserted text** *(default: off)*: one block, or a separate box per clip.
 - 🏷️ **Show source & jump in Clipper** *(default: on)*: shows/hides the source file label and the jump icon on cards.
 - 🔗 **Link source when inserting** *(default: on)*: toggles appending of back-links into notes.
 - 🔠 **Inserted text size**: **Small / Medium / Large**.
 - 📄 **Table of contents**: add a table of contents anywhere in the note, based on handwritten or text headings.
 - 📖 **A table of contents is one page, for now.** If your note has more headings than fit on a
-  single page, Clipper writes the ones that fit and says so at the bottom of the page —
+  single page, Clipper writes the ones that fit and says so at the bottom of the page:
   *"Showing first 21 of 24 headings"*. Multi-page tables of contents are built and tested but
   turned off in this release: writing across a page break triggers a crash in the Supernote
   note app itself, which we cannot fix from a plugin. The feature returns once that firmware
-  issue is resolved. Raising **Inserted text size** to Small fits more headings on the page.
+  issue is resolved. Setting **Inserted text size** to Small fits more headings on the page.
 - ♻️ **Rebuilding replaces the whole page, and asks first.** Refreshing a table of contents
   clears the page it sits on and writes it again, so anything you added to that page goes too.
-  Clipper always asks — *"Refreshing replaces everything on this page, including anything you
-  added since"* — and cancelling leaves the page exactly as it was.
+  Clipper always asks (*"Refreshing replaces everything on this page, including anything you
+  added since"*), and cancelling leaves the page exactly as it was.
 - 🔎 **If a rebuild finds fewer headings than last time**, Clipper asks before replacing what you
-  have — handwriting recognition is not perfectly repeatable, and a shorter table of contents
+  have. Handwriting recognition is not perfectly repeatable, and a shorter table of contents
   looks perfectly normal, so it should be your choice rather than a silent loss.
 - 🔄 **Reset to default**: quickly restore all default settings.
 
@@ -105,7 +115,7 @@ into a note → **settings** to tune insertion.
 5. ✅ The plugin appears as **Clipper**.
 6. 🔐 On first use, Clipper will ask for file access (see Permissions below).
 
-> ♻️ **Updating: install the new `.snplg` over the existing plugin — don't uninstall first.**
+> ♻️ **Updating: install the new `.snplg` over the existing plugin, don't uninstall first.**
 > An update installed over the top keeps everything. Uninstalling removes Clipper's stored clip
 > **images** (your text clips and their sources survive), because those image files live in the
 > plugin's own folder, which the device deletes when a plugin is removed.

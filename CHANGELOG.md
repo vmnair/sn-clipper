@@ -1,146 +1,83 @@
-# Clipper — Change Log
+# Clipper Change Log
 
-One entry per applied change: date, files touched, what and why.
-Planned work lives in `design_instance/PERMISSION_UPGRADE_PLAN.md`; items move here when landed.
+What changed in each release, from a user's point of view.
 
-## [0.3.0] - 2026-08-30
+*Entries before 0.3.0 are in the older, development-oriented style.*
 
-### 2026-09-05 — Clear All confirms; a missing clip image explains itself
-Files: `src/App.tsx`, `src/components/ClipCard.tsx`, `README.md`, `__tests__/App.test.tsx`
+## [0.3.0] - 2026-09-06
 
-From `design_instance/REVIEW-2026-09-05c.md`, after the uninstall experiment.
+Clip regions from your **notes**, not just documents. Inserts now flow across pages by
+themselves. Plus fixes to note capture that were quietly losing content, and clearer, safer
+behaviour around anything that deletes.
 
-- **Clear All now asks first.** It sits permanently in the bottom bar, one tap away, and `ClipService.clearClips` deletes every clip's PNG from disk as well as the records — so a stray tap was unrecoverable, as one during testing proved. It now says how many clips and how many saved images will go. **Delete Selected is deliberately left unguarded**: it needs a long-press and an explicit selection first, so intent is already established, and confirming both would train people to tap through.
-- **A clip whose image file is gone now says so** instead of rendering an empty grey box that reads as a rendering bug. Detection is `Image.onError` rather than an existence check per card: it costs nothing until a load actually fails, and it catches an unreadable or corrupt file as well as a missing one.
-- **Measured, and it corrects an earlier assumption:** region clip images are lost when Clipper is **uninstalled**, not when it is updated. Installing a new package over the existing plugin preserves them — verified byte-identically on build 348 across install-over-the-top, then lost only after an uninstall. A clip is stored as two halves with different lifetimes: the PNG lives in the plugin's own folder, which the host correctly removes on uninstall, while the record lives in AsyncStorage, which belongs to the host app and survives. README now tells users to update over the top rather than uninstalling first.
-- **After an uninstall, Clipper offers to tidy up the clips that lost their images.** A marker directory in the plugin's own folder tells the two cases apart: it survives an install over the top and dies with an uninstall, which is the only signal available — there is no uninstall hook and the plugin is not running when it is removed. On detecting it, Clipper asks — *"Clipper was uninstalled and reinstalled… Remove them, or keep them without images?"* — and keeping is a real answer, since the "image unavailable" card covers their display. **It always asks and never acts on its own**: the trigger is a detection heuristic, and a heuristic that can silently destroy is the bug rather than the fix. Every failure path reports "no reset", so a filesystem hiccup cannot produce a destructive prompt.
-- 177 tests passing.
+### ✨ New
 
-### 2026-09-05 — ToC refresh asks instead of guessing; shape classification removed
-Files: `src/services/IndexService.ts`, `src/App.tsx`, `README.md`, `__tests__/IndexService.test.ts`
+**Region capture in notes.** Clip a diagram, a sketch or a block of handwriting straight out of
+a `.note` page, the same way you already could from a PDF or EPUB.
 
-From `design_instance/REVIEW-2026-09-05.md`, after the device pass demonstrated the residual risk accepted in review 04b.
+**A "Clip Region" button on the toolbar.** Frame and capture a region directly, without going
+through a text selection first.
 
-- **A refresh now always asks before replacing the page.** *"Refreshing replaces everything on this page, including anything you added since. Continue?"* — asked before the scan, so declining is instant and touches nothing. This replaces the mixed-page refusal of review 2026-09-03c Q2, which was chosen when the only alternative was clearing silently; consent beats both silence and a refusal that forced the user to hand-delete their own table of contents in order to refresh it.
-- **The element shape classification is gone.** `TOC_ROW_SHAPES`, `isTocRowElement`, `elementTextCandidates` and `classifyTocPage` asked "is this element ours?", and that question produced two data-safety bugs in opposite directions: first refusing every refresh (only the header carries the phrase, so every row counted as user content), then silently **deleting** a user's typed text box reading `notes ...`, because a trailing ellipsis matches a dot leader — reproduced on device 2026-09-04. The question was wrong. `clearPageElements` wipes the whole page rather than removing our rows selectively, so what matters is not whose each element is but whether the user agreed to lose the page. Header detection is all the decision needs now.
-- **Fails closed when no confirmation callback is wired**: a caller that cannot ask cannot clear the page by omission. An unconditional dialog was chosen over a conditional one precisely because a conditional warning can fail to fire, and a guard that can silently stay quiet is the bug being closed, not the fix.
-- **A page is only ours when it carries BOTH markers we write — the header and the `{note} · Generated {date}, {time}` subtitle — matched on the element's visible text.** `isTocElement` searches `JSON.stringify(element)`, the whole flattened object rather than the text, so any field could trip it: a jump link pointing at a note *named* `Table of Contents.note` put the phrase in `destPath` and made a page of pure handwriting look like ours, as did a user's own hand-made contents page. Neither was silent loss — the replace dialog gated both — but the dialog then offered to refresh a page that was never ours. The same mechanism as the "protocol/stochastic" bug on `isTocElement`: lengthening the search terms fixed that symptom, the flattening stayed. This remains one page-level question asked with two markers, not the per-element shape matching retired above. Fails closed: a ToC page whose subtitle has been deleted no longer reads as ours and is refused rather than replaced. Continuation pages stay header-only, since the subtitle is written on the first page alone.
-- **Handwriting on a table of contents page is no longer protected by a refusal — it is replaced along with everything else once you confirm.** Previously a stroke on that page made Clipper refuse the refresh outright. This is the intended consequence of asking instead of guessing, and it changes what a rebuild can cost you.
-- Building onto an occupied page that is *not* ours still refuses, unchanged and without a dialog — consent covers replacing our own page, not writing over arbitrary content.
-- 168 tests passing (three shape-classification tests retired with the code they tested; five added for the consent path, including a regression test for the `notes ...` deletion).
+**Inserts continue onto the next page.** When a batch of clips is too big for the current page,
+Clipper turns to the next existing page and carries on, instead of stopping.
 
-### 2026-09-04 — Device matrix fallout: pagination descoped, refresh guard fixed, heading loss surfaced
-Files: `src/services/IndexService.ts`, `src/services/StorageService.ts`, `src/App.tsx`, `README.md`, `__tests__/IndexService.test.ts`
+### 📖 Table of contents: now with a limit made explicit
 
-From the device pass (`design_instance/reports/0.3.0-device-matrix-2026-09-04.md`) and review 2026-09-04.
+The table of contents itself isn't new (it arrived in 0.1.9), but this release settles how it
+behaves when it doesn't fit.
 
-- **Multi-page ToC is descoped for 0.3.0 and gated behind `TOC_PAGINATION = false`.** Writing a continuation page means navigating the reader mid-write, and on device that navigation cancelled an in-flight page load while the firmware's native ink renderer was still drawing into the page bitmap — `signal 6 (SIGABRT) … Scudo ERROR: invalid chunk state when deallocating` inside `librecgnition.so drawShadow`. The note app died 3.2s after the 21st row; rows 22-24 were emitted correctly (`top` resetting to 418/508/598, destPage 52/53/54) into a dead client, so the continuation page came out blank. We cannot fix a firmware heap corruption, could not reproduce it on demand, and therefore cannot demonstrate its absence. A ToC longer than one page now writes one page and reports "Showing first N of M headings" — the decline path, which passed on device twice. The machinery below the flag (availability walk, shortfall dialog, `insertNotePage`, page-shift arithmetic, settle barrier) is proven work and is deliberately kept, not deleted; its tests stay green by opting into the flag.
-- **Every ToC refresh was being refused.** `isTocElement` matches only the header phrase `TABLE OF CONTENTS`, so on a real ToC page each of its ~21 rows counted as user content, `startHasContent` was unconditionally true, and the mixed-page guard fired every time: *"This ToC page also contains your own content…"* — on a page containing nothing but our own rows. Classification is now **page-level**: a page is ours when the header is present **and** every other element matches a shape we author (a dot leader, a `p. <n>` column, an ↗ link into this same note, the subtitle, the truncation footer). Matching is whole-string anchored on shape, never a loose substring over the stringified element — the rule the "protocol/stochastic" comment exists to protect. Anything else, including a single handwritten stroke, still refuses. Regression bug introduced by the review-03c Q2 change and never run on device until now.
-- **A page holding ToC rows whose header has been deleted is now left alone** rather than treated as blank and written over.
-- **Silent heading loss is now a choice.** The same note scanned 24, 24, then 16 headings on device — the short result looks like a perfectly good ToC. `scanHeadings` now logs one accounting line per scan (`ToC-scan: … typed=… tight=… recognized=… dropped=… droppedOnPages=[…]`) so a drop is attributable to recognition rather than our filtering, and the heading count of the last successful build is persisted separately from the ToC snapshot (which is cleared as soon as the ToC lands). When a rebuild finds fewer headings than the last one, the user is asked before anything is cleared — *"This scan found 16 headings; the last build found 24… Rebuild anyway / Keep existing"* — and declining leaves the existing ToC completely untouched. Root cause still under investigation.
-- 166/166 tests passing (was 159; seven added).
+**A table of contents is one page.** If your note has more headings than fit, Clipper writes the
+ones that fit and says so at the bottom: *"Showing first 21 of 24 headings"*. Multi-page is
+built but switched off: writing across a page break can crash the note app on the current
+firmware. It returns once that is fixed. Choosing a smaller **Inserted text size** fits more
+headings on the page.
 
-### 2026-09-03 — Item 9 rework: all page decisions taken before the first write
-Files: `src/services/IndexService.ts`, `src/App.tsx`, `__tests__/IndexService.test.ts`, `__tests__/App.test.tsx`
+### 🔧 Fixed
 
-From the device pass (`design_instance/reports/0.3.0-item-9-device-pass-2026-09-03.md`) and review 2026-09-03b.
+- **Note captures no longer include the page's ruled lines.** The template was being baked into
+  the image behind your ink.
+- **Note captures now include every visible layer.** Anything drawn on a layer other than the
+  main one was silently missing from the clip.
+- **Auto-trim now works on note clips.** Empty margins around a note capture were never being
+  trimmed, so clips came out larger than what you framed.
+- **Clips are no longer removed when their insert didn't actually land.** With "Remove clips
+  after inserting" on, a failed insert could still delete the clip.
+- **A long clip split across a page break no longer corrupts the pieces after it.** In a merged
+  clip, leftover text from one part could bleed into a later part.
 
-- **The ToC progress overlay blocked its own dialog.** It is a `<Modal>`, so it rendered above the "More pages needed" `ConfirmationDialog` and swallowed every touch — the build hung on a question that could not be answered, and the plugin host had to be force-stopped. The overlay is now hidden for the duration of the question and restored afterwards. The react-native mock had no `Modal`/`ActivityIndicator`, so any test entering the "generating" state crashed with "Element type is invalid" — which is why this path had no coverage; both are now mocked and the fix has a regression test.
-- **The page-empty guard was reading stale data and silently dropping the continuation chunk.** Measured on device: after writing, `getElements(p)` returns a *neighbouring* page's contents for any page the reader is not currently displaying — it reported 65 elements (the exact count just written to page 7) for a blank page 8, while page 9 correctly reported 439. `saveCurrentNote` + `reloadFile` does **not** refresh it.
-- Fix: every read that informs a decision — the target page, which following pages can be reused, which pages hold an old ToC to clear — now happens **before the first write**, on a fresh layout, and the write loop trusts that plan. Pages the run creates are blank by construction and are never read. The post-write empty check is gone rather than left vestigial. Covered by a test asserting the last read precedes the first write, which fails (`Expected: < 5, Received: 105`) if a post-write read is reinstated.
-- The HARD GUARD moved ahead of the refresh-clear for the same reason; its old placement only ever erred safe by luck. It needs no re-verification: it judges the page the reader is currently on, and a read of the current page is the one read the stale-layout defect never corrupts.
-- Accepted and documented at the clear site: the refresh window, where a failure between clearing the old ToC and writing the new one leaves the page blank. It is regenerated content and the modal blocks interaction.
-- Kept the two stop-path `console.warn`s; they turned a silent drop into a one-build diagnosis.
-- **A mixed ToC page is now refused instead of cleared** (review 2026-09-03c Q2). `startHasContent` counts any non-ToC element, so a page holding both our rows and the user's own content is treated as occupied and refused with its own message — "This ToC page also contains your own content; refreshing would delete it..." Previously ToC presence alone made the page refreshable and the clear removed the user's elements with it: a latent user-data deletion, now closed. Selective row-level refresh around user annotations is 0.4.0 work.
-- **Stale ToC pages beyond user content are now cleared** (Q1). The forward walk answers two questions with different stopping points: where we may write (closes at the first page holding any user element, never reopens) and what must be cleared (every page that is entirely our own ToC). A stale continuation page is not just untidy — it carries live-looking jump links with wrong page numbers. Mixed pages are left completely alone, neither cleared nor written. The clearing sweep runs only on a refresh.
-- 159/159 tests passing.
+### ⚠️ Things worth knowing
 
-### 2026-09-03 — Item 9: multi-page Table of Contents with ask-then-create
-Files: `src/services/IndexService.ts`, `src/utils/pageNav.ts`, `src/App.tsx`, `README.md`, `__tests__/IndexService.test.ts`
+**Rebuilding a table of contents replaces the whole page.** Everything on that page goes,
+including notes or handwriting you added to it. Clipper always asks first, and cancelling leaves
+the page exactly as it was.
 
-- A ToC longer than one page used to be silently truncated to the first `rowsPerPage` entries with a "Showing X of Y entries" footer. It now spans as many pages as it needs.
-- **Pages already blank after the ToC are used as-is**; only the shortfall is created, and only after asking once per run: *"The Table of Contents needs N more page(s). Add them?"* Declining is a normal answer — the ToC is written as far as it fits and reports "Showing first N of M headings", both on the page and in the result message. A build is never failed over pagination.
-- Page creation uses `generateNoteTemplatePng` to render the ToC page's own background and passes that **file path** as `insertNotePage`'s `template`. A style name from `getNotePageTemplate` fails with code 802 — the error that was previously mistaken for the API being unimplemented.
-- **Heading page references are shifted by the number of pages inserted.** Inserting continuation pages pushes every later page down, so without this every row would name, and link to, a page one short of the real one. Covered by a test that fails with the shift removed (link resolved to page 3 instead of 5).
-- `insertText` only ever writes the current page, so each chunk is written after moving the reader and confirming it arrived. The settling barrier from the insert flow is now shared as `src/utils/pageNav.ts` rather than duplicated. Continuation pages carry a "TABLE OF CONTENTS (cont.)" header; the subtitle stays on the first page only.
-- **Refresh now clears every page the old ToC occupied**, not just the first. A refresh that shrinks (60 headings down to 20) previously rewrote page 1 and stranded the old rows on page 2. Pages are only ever cleared, never removed.
-- The page-empty guard still applies to any page the ToC did not create itself, and the forward scan while clearing is bounded by the note's real page count.
-- Transient `tpl_*` template renders join the orphan sweep.
-- 155/155 tests passing.
+**If a rebuild finds fewer headings than last time, Clipper asks before replacing.**
+Handwriting recognition isn't perfectly repeatable, and a shorter table of contents looks
+perfectly normal, so it's your call rather than a silent loss.
 
-### 2026-09-03 — Polish: auto-trim works for note clips; silent failures now speak; comments restored
-Files: `android/app/src/main/java/com/sn_clipper/ImageCropModule.kt`, `src/App.tsx`, `index.js`, `__tests__/App.test.tsx`
+**Clear All now asks first.** It deletes every clip and its saved images, and it sits one tap
+away in the bottom bar.
 
-Review decisions D2, D3 and D4 from `design_instance/REVIEW-2026-09-03.md`.
+**A clip whose image has gone missing now says so** on the card, instead of showing an empty
+box that looks like a display glitch.
 
-- **Auto-trim never worked for note clips (D3).** `cropImage` advertises trimming empty margins, but `isWhitespace` tested only r/g/b > 245 and ignored alpha. Note captures come back transparent apart from their ink, and a transparent pixel is `(0,0,0,0)` — indistinguishable from black by RGB alone — so the first row scanned read as "not white", the loop broke immediately, and nothing was ever trimmed. Doc captures are opaque white and trimmed correctly, which is why this went unnoticed. Fully transparent pixels now count as whitespace; partially transparent ones are left alone, being the anti-aliased edges of real strokes. **Verified on device (build 335):** the same fixture and crop region that produced a small floating image on build 328 now trims to its content.
-- **The page-loop bound stopped silently (§4.3).** Exhausting `pageBudget` ended the run looking exactly like a normal finish, so a user had no idea why the batch stopped or that tapping Insert again continues it. It now says so, and the clips stay queued as before.
-- **A partial layer capture said nothing (§4.5).** When some of a note page's layers render and others fail, compositing what we have still beats failing the capture — but the clip is then missing content that is visible on the page, which is the same class of silent loss the layer composite exists to remove. It now warns.
-- **Restored on-device calibration comments deleted by the item-8 rewrite (§4.4).** Why `imageLeftInset` is `0.6·fontSize` (measured on Manta), why image size is never upscaled (the note app's OpenCV resize reads past the source bounds and crashes it), and why `getElemBottom` clamps to `pageHeight - 120` (a digitizer-noise guard; strokes are now included deliberately so inserts land below handwriting, with the clamp filtering instead of the old skip-strokes rule). That knowledge had been left only in git history.
-- **Corrected a comment that asserted a platform limitation that does not exist (D2).** `runInsertClips` claimed the host does not implement `insertNotePage`. It does — pass a rendered PNG path from `generateNoteTemplatePng`; a style name from `getNotePageTemplate` fails with 802. The guidance modal is a 0.3.0 choice, not a platform limit, and conversion to ask-then-create is deferred to 0.3.1. That comment was the vector by which the wrong conclusion propagated into the release plan.
-- Removed an unused `isNoteFile` import from `index.js` (§4.6).
-- 150/150 tests passing; the new partial-layer warning has a regression test that fails with the warning removed.
+**Resuming an interrupted insert needs "Remove clips after inserting" turned on.** Clipper
+resumes by removing what it already placed, so with that setting off it starts again from the
+beginning and repeats itself. Turn it on before inserting a batch too big for one page.
 
-### 2026-09-02 — Fix: Note region capture dropped content on non-main layers
-Files: `src/App.tsx`, `android/app/src/main/java/com/sn_clipper/ImageCropModule.kt`, `__tests__/App.test.tsx`
+**Page Full still needs you to add the page.** When a note runs out of pages, Clipper asks you
+to tap `+` in the note toolbar; your remaining clips stay queued.
 
-- `generateLayerPreviewImage(file, page, 0, out)` renders **one** layer. A Standard note can carry ink on layers other than the main one, so capturing layer 0 alone silently dropped it. **Confirmed on-device (build 327):** a fixture with a `Main Layer 0` text box on the main layer and pen ink on Layer 1 produced a clip containing the text and none of the ink — verified on PNGs pulled off the device, not on a screenshot.
-- Diagnostic build established the facts the fix needed, all on-device: `getLayers` returns only the layers that exist, as `{layerId, name, isVisible, isCurrentLayer}` with **no** `isBackgroundLayer` flag, so `layerId` is the only way to identify the template; `layer: -1` renders the **background template alone** (so it is not an "all layers" shortcut) and comes back **opaque white**, while content layers come back **fully transparent** except for their ink; and `layer: 2`/`3` on a page that lacks them fail with code 808 rather than rendering empty.
-- Fix: enumerate with `PluginFileAPI.getLayers`, keep visible layers with `layerId >= 0` (excluding -1, the template), render each to its own PNG and flatten them bottom-up via a new native `ImageCropModule.compositeImages(paths, destPath)` — a plain source-over draw onto one ARGB canvas, which is correct precisely because the layer renders are transparent. Output keeps its alpha so the crop and insert paths downstream see the same kind of image they always did.
-- Deliberately unchanged in the common case: a page with a single content layer renders straight to the destination with no compositing, so notes that only use the main layer (all 31 on the test device) gain no new failure mode. Falls back to the bottom content layer if compositing fails, and to layer 0 if `getLayers` is unavailable, so an older host cannot end up with no capture at all.
-- **Verified on-device (build 328):** the same fixture now captures both the Layer 1 ink and the Main Layer text, with the ruled template still correctly excluded — confirmed in the crop overlay, in the saved clip, and finally on the exported PNG pulled off the device. 149/149 tests passing.
-- Also reconfirmed on 327 for the Ratta report: `generateNotePng` with `type: 0` still composites the page template.
+### ♻️ Updating from an earlier version
 
-### 2026-09-01 — Fix: Auto-remove could delete clips whose inserts never landed
-Files: `src/App.tsx`, `__tests__/App.test.tsx`
+**Install the new `.snplg` over the existing plugin, don't uninstall first.**
 
-- The multi-page rewrite dropped the pre-existing check that inserted elements are actually present in the note before auto-remove deletes the clips they came from, and dropped the "Some clips could not be inserted" toast with it. Auto-remove ran on `attemptedInserts > 0`, so a run where every insert silently dropped still deleted every clip — content gone from Clipper and never in the note. `insertImage` is the realistic case: it can resolve successfully and leave nothing behind.
-- Fix: restore the verification, adapted to the page loop. Each page snapshots the element uuids present before its inserts and, after saving, counts how many new uuids landed; auto-remove now requires the running total to cover every attempted insert. When it does not, the clips are kept, the failure is reported, and the plugin view stays open instead of claiming success. This also puts the per-page `beforeIds` set back to use — it was still being built and then ignored.
-- Added a regression test: an insert whose verification reports no new elements keeps its clip, warns, and does not close the view. Confirmed it fails (clip deleted) with the guard reverted. 145/145 tests passing.
+Updating over the top keeps everything. **Uninstalling deletes your saved clip images**, because
+those files live in the plugin's own folder, which the device removes when a plugin is removed.
+Your text clips and their sources survive either way.
 
-### 2026-08-31 — Fix: Stale split-remainder could corrupt a later merged-clip element
-Files: `src/App.tsx`, `__tests__/App.test.tsx`
-
-- **Dead code:** Removed `stoppedEarlyDueToSplit` in `runInsertClips` — declared but never assigned (a leftover from the pre-Item-8 single-page code, where an equivalent `splitOccurred` flag was set explicitly; the assignment was dropped when Item 8 restructured this into the multi-page loop). The final status-message check now just reads `splitRemainder[items[i]?.clipId]` directly.
-- **Real bug found while investigating it:** `splitRemainder[clipId]` was set whenever a text item got split across pages, but was never cleared once that item later completed via the "fits whole" path (single item or combine-group). For a **merged clip** with more elements after the split one, if the insert run ended before those later elements were ever attempted, `ClipService.trimInsertedElements` would splice the stale leftover text from the *earlier, already-resolved* split onto the *next, untouched* element — silently corrupting its content.
-- Fix: clear `splitRemainder[clipId]` at the exact point an item (or combine-group member) completes successfully, so a resolved split can never leak onto a later element of the same clip.
-- Added a regression test that merges 3 clips (`E1` long enough to split, `E2`, `E3`), drives the run to Page-Full right after `E1`'s split resolves and before `E2` is ever attempted, and asserts `E2`/`E3` survive byte-for-byte. Verified the test fails (reproducing the exact corruption) with the fix reverted, and passes with it restored. 144/144 tests passing.
-
-### 2026-08-31 — Fix: Note Region Capture Baking Template Ruled Lines
-Files: `src/App.tsx`, `__tests__/App.test.tsx`
-
-- **Build 324 attempt (insufficient):** Changed `generateNotePng`'s `type: 1` → `type: 0` (SDK docs: 0 = transparent background). Confirmed on-device (pulled the raw capture from `/sdcard/.data/plugin/` directly) that ruled lines were still baked into the PNG — `type` does not control template compositing on this firmware (Chauvet `3.29.43_beta`), contrary to the SDK doc comment.
-- **Build 325 fix:** Made `PluginNoteAPI.generateLayerPreviewImage(notePath, page, 0, pngPath)` the primary render path for note region-capture instead of `generateNotePng` — it renders only the element/handwriting layer, not the page background template. `generateNotePng` (`type: 0`) is now only a fallback if the layer-preview call fails.
-- Updated/added unit tests covering both the primary `generateLayerPreviewImage` path and the `generateNotePng` fallback.
-- See `design_instance/current_status.md` for the full investigation (this was compounded by a since-fixed `PermissionService` bug that misidentified "Always Allow" as ungranted, forcing a raw framebuffer screencap fallback with visible UI/template lines).
-
-### 2026-08-30 — Item 8: Auto Page-Turn & Guided Page Full Pagination
-Files: `src/App.tsx`, `src/components/ConfirmationDialog.tsx`, `src/utils/paths.ts`, `__tests__/App.test.tsx`
-
-- **Item 8 (Auto Page-Turn on Insert across Existing Pages & Guided Page Full UX):**
-  - Wrapped `runInsertClips` in a multi-page loop bounded by `pageBudget = 20`.
-  - Added per-page dimension and robust element bottom calculation via `PluginFileAPI.getPageSize` and `PluginFileAPI.getElements` with comprehensive stroke bounding (`getElemBottom`).
-  - Implemented seamless auto page-turn via `PluginCommAPI.jumpToPage(nextPage)` with active settling polling when subsequent pages exist in the note.
-  - Implemented single-button **"Page Full"** modal when reaching the final note page, instructing users to add a page via toolbar `+` while safely preserving queued uninserted clips for instant resume.
-  - Added password-locked file pre-check in `handleOpenSource` via `PluginFileAPI.getPathEncryptionStatus`.
-  - Added unit test cases in `__tests__/App.test.tsx` covering all multi-page auto-turn, existing-page continuation, and Page Full guidance scenarios.
-
-### 2026-08-30 — Item 7: Region Capture in NOTE Files
-Files: `index.js`, `__tests__/App.test.tsx`
-
-- **Item 7 (Region Capture in NOTE files):** Extended dedicated "Clip Region" button (ID 101) registration from `['DOC']` to `['NOTE', 'DOC']` so region capture is accessible directly from note toolbars.
-- Verified fallback render branching in `App.tsx` routes note files to `PluginFileAPI.generateNotePng` and document files to `PluginDocAPI.generateCurrentDocImage`.
-- Added unit test coverage in `App.test.tsx` verifying fallback crop screenshot routing for both note and document contexts.
-
-### 2026-08-29 - Version 0.3.0 Feature Release
-Files: `index.js`, `src/App.tsx`, `src/services/ClipService.ts`, `src/services/IndexService.ts`, `src/services/StorageService.ts`, `assets/icon/*`, `PluginConfig.json`, `package.json`
-
-- **Item 3 (1501/1503 Error Wiring):** Checked return results of `replaceElements` and `deleteElements` in `IndexService.generateTocPage`, and `modifyElements` in `App.tsx` image insertion; routed error codes to `reportPermissionError`.
-- **Item 4 (Jump-to-Source SDK Migration):** Migrated `handleJumpToSource` from native `ImageCropModule.openFileDirectly` to official `PluginFileAPI.openFile(filePath, page)`.
-- **Item 1 (Region-Capture Toolbar Button):** Registered dedicated type 1 button (ID 101, `['DOC']`, `showType: 0`) named "Clip Region" with background screencap before opening `CropOverlay`. Added `cropActiveRef` and `waitForPendingCropShot` to eliminate cold-start AppState active race conditions.
-- **Item 6 (Icon Overhaul):** Redrew `icon.png` using a bold geometric viewfinder design with text highlight bars (Concept A) to form a unified visual sibling pair with `clip_region.png` (viewfinder + crosshair) at 160px stroke weight. Preserved original dashboard search, filter, settings, jump, and clear icons; added bold 'X' `close.png`.
-- **Item 2 (Adaptive ToC Submenus):** Implemented adaptive heading style mapping in `IndexService.scanHeadings` and level-based indentation in `generateTocPage` and in-app ToC tab.
-- **Item 5 (Sticker Route Research):** Completed SDK sticker API research and delivered findings in `design_instance/reports/sticker-route-findings.md`.
+If you do uninstall and reinstall, Clipper notices on the next launch and offers to tidy up the
+clips whose images are gone, or to keep them, if you'd rather.
 
 ## [0.2.0] - 2026-08-28 (permission-system upgrade)
 
@@ -216,7 +153,6 @@ Files: none (verification); artifact `build/outputs/SnClipper.snplg` at 0.2.0 / 
 
 - Verified `build/generated/PluginConfig.json` carries `uses-permissions` through the build, with
   `pluginID`/`pluginKey` unchanged. Installed on a Manta A5X2 (Chauvet 2488_beta) and ran the
-  matrix; results in `design_instance/reports/test-matrix-results.md`.
 - **Region capture verdict (plan step 7): KEEP — no feature flag.** `screencap` still works under
   the new host; "Clip Region" produced a correct WYSIWYG crop of a reflowable EPUB page. Brief
   rule 5's fallback was not needed.

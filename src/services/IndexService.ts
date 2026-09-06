@@ -1203,8 +1203,8 @@ export class IndexService {
       // cap is deliberate — so the old "add a page, then Refresh" advice would be a lie.
       const message = written < headings.length
         ? (tocPaginationEnabled
-          ? `Table of Contents on ${where} — showing first ${written} of ${headings.length} headings. Add a page after it, then Refresh for the rest.`
-          : `Table of Contents on ${where} — showing first ${written} of ${headings.length} headings. One page is the limit in this release.`)
+          ? `Table of Contents on ${where}, showing first ${written} of ${headings.length} headings. Add a page after it, then Refresh for the rest.`
+          : `Table of Contents on ${where}, showing first ${written} of ${headings.length} headings. One page is the limit in this release.`)
         : `Table of Contents created on ${where}.`;
 
       // Baseline for the next build's heading-loss check. Records what the SCAN found, not

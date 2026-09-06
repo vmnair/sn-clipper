@@ -131,14 +131,14 @@ export class PermissionService {
   static messageForError(e: any): string | null {
     switch (this.errorCode(e)) {
       case ERR_READ_DENIED:
-        return `Clipper lost read access to your files. Try again — or: ${SETTINGS_HINT}`;
+        return `Clipper lost read access to your files. Try again, or: ${SETTINGS_HINT}`;
       case ERR_WRITE_DENIED:
-        return `Clipper lost write access to your notes. Try again — or: ${SETTINGS_HINT}`;
+        return `Clipper lost write access to your notes. Try again, or: ${SETTINGS_HINT}`;
       case ERR_NOT_DECLARED:
       case ERR_BAD_NAME:
         return 'Clipper could not request file access on this firmware (permission not recognised).';
       case ERR_PATH_LOCKED:
-        return 'That file is locked or encrypted — unlock it on the device and try again.';
+        return 'That file is locked or encrypted. Unlock it on the device and try again.';
       default:
         return null;
     }
