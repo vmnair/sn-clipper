@@ -105,6 +105,11 @@ into a note → **settings** to tune insertion.
 5. ✅ The plugin appears as **Clipper**.
 6. 🔐 On first use, Clipper will ask for file access (see Permissions below).
 
+> ♻️ **Updating: install the new `.snplg` over the existing plugin — don't uninstall first.**
+> An update installed over the top keeps everything. Uninstalling removes Clipper's stored clip
+> **images** (your text clips and their sources survive), because those image files live in the
+> plugin's own folder, which the device deletes when a plugin is removed.
+
 ---
 
 ## 🔐 Permissions

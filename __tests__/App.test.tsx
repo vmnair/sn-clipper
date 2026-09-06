@@ -224,18 +224,63 @@ describe('App Component', () => {
     expect(ToastAndroid.show).toHaveBeenCalledWith('Visible clips copied!', ToastAndroid.SHORT);
   });
 
-  it('handles clearing all clips', async () => {
+  it('asks before clearing all clips, and clears once confirmed', async () => {
     await ClipService.addClip('Snippet A', 'Doc A');
 
     const root = await renderApp();
 
     const clearBtn = root.root.findByProps({ label: 'Clear All' });
-    await act(async () => {
-      await clearBtn.props.onPress();
-    });
+    let pending: any;
+    await act(async () => { pending = clearBtn.props.onPress(); });
+
+    // Nothing is destroyed until the user answers.
+    expect(ClipService.getClipsSync()).toHaveLength(1);
+
+    const dialog = root.root.findByType(ConfirmationDialog);
+    expect(dialog.props.title).toBe('Clear all clips?');
+    await act(async () => { dialog.props.onConfirm(); await pending; });
 
     expect(ClipService.getClipsSync()).toEqual([]);
     expect(ToastAndroid.show).toHaveBeenCalledWith('Clipboard cleared!', ToastAndroid.SHORT);
+  });
+
+  it('shows an explanation instead of a blank box when a clip image is missing', async () => {
+    // Uninstalling the plugin removes the PNGs but leaves the records, so a card can point at
+    // a file that is gone (measured on device 2026-09-05). Rendered blank it reads as a
+    // rendering bug; it must say what happened.
+    const { Image } = require('react-native');
+    await ClipService.addImageClip('/gone/clip_123.png', 'Doc A', 400, 300);
+
+    const root = await renderApp();
+
+    // Nothing yet -- the image has not failed to load.
+    expect(root.root.findAllByProps({ testID: 'clip-image-unavailable' }).length).toBe(0);
+
+    // The host reports the file cannot be loaded.
+    const img = root.root.findAllByType(Image).find((n: any) => String(n.props.source?.uri || '').includes('clip_123.png'));
+    expect(img).toBeTruthy();
+    await act(async () => { img!.props.onError(); });
+
+    const placeholder = root.root.findAllByProps({ testID: 'clip-image-unavailable' });
+    expect(placeholder.length).toBeGreaterThan(0);
+  });
+
+  it('cancelling Clear All keeps every clip', async () => {
+    // Clear All sits permanently in the bottom bar and deletes the PNGs from disk as well as
+    // the records, so a stray tap used to be unrecoverable.
+    await ClipService.addClip('Snippet A', 'Doc A');
+
+    const root = await renderApp();
+
+    const clearBtn = root.root.findByProps({ label: 'Clear All' });
+    let pending: any;
+    await act(async () => { pending = clearBtn.props.onPress(); });
+
+    const dialog = root.root.findByType(ConfirmationDialog);
+    await act(async () => { dialog.props.onCancel(); await pending; });
+
+    expect(ClipService.getClipsSync()).toHaveLength(1);
+    expect(ToastAndroid.show).not.toHaveBeenCalledWith('Clipboard cleared!', ToastAndroid.SHORT);
   });
 
   it('closes plugin view on Header Close (X) button click', async () => {

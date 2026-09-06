@@ -50,9 +50,12 @@ jest.mock('sn-plugin-lib', () => ({
     registerButton: jest.fn(),
     registerButtonListener: jest.fn(),
     closePluginView: jest.fn(),
+    getPluginDirPath: jest.fn().mockResolvedValue('/plugin/dir'),
   },
   FileUtils: {
     deleteFile: jest.fn().mockResolvedValue(true),
+    exists: jest.fn().mockResolvedValue(true),
+    makeDir: jest.fn().mockResolvedValue(true),
   },
 }));
 
@@ -478,5 +481,63 @@ describe('ClipService', () => {
       const result = await promise;
       expect(result).toEqual(shot);
     });
+  });
+});
+
+// ---- Reinstall detection (design review 2026-09-05c, option 6) ------------------------
+describe('ClipService.detectReinstall', () => {
+  const { FileUtils } = require('sn-plugin-lib');
+  const MARKER = '/plugin/dir/.clipper_install_marker';
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await require('@react-native-async-storage/async-storage').clear();
+    (FileUtils.exists as jest.Mock).mockResolvedValue(true);
+  });
+
+  it('plants the marker on a first run and reports no reset', async () => {
+    (FileUtils.exists as jest.Mock).mockResolvedValue(false);   // nothing there yet
+
+    const res = await ClipService.detectReinstall();
+
+    expect(res.reset).toBe(false);
+    expect(FileUtils.makeDir).toHaveBeenCalledWith(MARKER);
+    expect(await StorageService.getInstallMarked()).toBe(true);
+  });
+
+  it('reports no reset when the marker is still there (install over the top)', async () => {
+    await StorageService.setInstallMarked();
+    (FileUtils.exists as jest.Mock).mockResolvedValue(true);
+
+    const res = await ClipService.detectReinstall();
+
+    expect(res.reset).toBe(false);
+    expect(FileUtils.makeDir).not.toHaveBeenCalled();
+  });
+
+  it('reports a reset and names the clips whose images are gone', async () => {
+    await StorageService.setInstallMarked();
+    await ClipService.addImageClip('/plugin/dir/clip_a.png', 'Doc A');
+    await ClipService.addClip('just text', 'Doc B');
+    const imageClipId = ClipService.getClipsSync().find((c) => c.elements.some((e) => e.type === 'image'))!.id;
+
+    // Marker gone; the image file is gone with it. Text clips are untouched.
+    (FileUtils.exists as jest.Mock).mockImplementation(async (p: string) => !p.includes('.clipper_install_marker') && !p.includes('clip_a.png'));
+
+    const res = await ClipService.detectReinstall();
+
+    expect(res.reset).toBe(true);
+    expect(res.orphanedClipIds).toEqual([imageClipId]);   // only the image clip
+  });
+
+  it('never reports a reset when the filesystem throws', async () => {
+    // A hiccup reading the marker must not be able to trigger a destructive prompt.
+    await StorageService.setInstallMarked();
+    (FileUtils.exists as jest.Mock).mockRejectedValue(new Error('io'));
+
+    const res = await ClipService.detectReinstall();
+
+    expect(res.reset).toBe(false);
+    expect(res.orphanedClipIds).toEqual([]);
   });
 });

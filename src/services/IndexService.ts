@@ -189,6 +189,55 @@ const getRecognizedTextForElement = (elem: any): string => {
 };
 
 /**
+ * Does this page carry BOTH markers we author on a ToC page — the header AND the subtitle?
+ * (Design review 2026-09-05b, item 2.)
+ *
+ * `isTocElement` answers "is the phrase anywhere in this element?" by searching
+ * `JSON.stringify(elem)` — the whole flattened object, not the visible text. Any field can
+ * trip it. A jump link whose `destPath` points at a note *named* "Table of Contents.note"
+ * matches, even though its visible text is a single arrow, so a page of pure handwriting
+ * could be offered up for replacement. A hand-made contents page matches too.
+ *
+ * Neither was silent data loss — the replace dialog gates both — but the dialog then lies: it
+ * offers to refresh a page that was never ours. This is the same mechanism as the
+ * "protocol/stochastic" bug recorded on `isTocElement`; lengthening the search terms fixed
+ * that symptom, the flattening stayed.
+ *
+ * So identity now needs two markers, matched on VISIBLE TEXT via the named fields:
+ *   - the header, exactly "TABLE OF CONTENTS" (or the "(cont.)" continuation form), and
+ *   - the subtitle, "{note}  ·  Generated {date}, {h:mm AM/PM}".
+ *
+ * A generated timestamp is not something anyone reproduces by accident, and neither failing
+ * case above produces one. This stays a PAGE-level question asked with two markers; it is not
+ * the per-element shape matching retired on 2026-09-05, which asked the unanswerable "is this
+ * element ours?" of every element on the page.
+ *
+ * Fails CLOSED: a ToC page whose subtitle the user has deleted no longer reads as ours, so a
+ * refresh refuses and asks for a blank page rather than silently replacing something it can no
+ * longer identify.
+ */
+const TOC_HEADER_TEXT = /^TABLE OF CONTENTS(\s*\(CONT\.\))?$/;
+// Time is hand-built in `generatedSubtitle` (Hermes' Intl is unreliable), so `h:mm AM/PM` is
+// stable regardless of locale even though the date part is not.
+const TOC_SUBTITLE_TEXT = /\s·\s+GENERATED\s.+\d{1,2}:\d{2}\s(AM|PM)$/;
+
+const visibleTextOf = (elem: any): string => getRecognizedTextForElement(elem).trim().toUpperCase();
+
+const hasOurTocIdentity = (elems: any[]): boolean => {
+  const list = Array.isArray(elems) ? elems : [];
+  let header = false, subtitle = false;
+  for (const e of list) {
+    const txt = visibleTextOf(e);
+    if (!txt) continue;
+    if (TOC_HEADER_TEXT.test(txt)) header = true;
+    else if (TOC_SUBTITLE_TEXT.test(txt)) subtitle = true;
+    if (header && subtitle) return true;
+  }
+  return false;
+};
+
+
+/**
  * Strict spatial & length classifier to determine if a text element is a valid Heading title.
  * Must lie tightly inside the Title bounding box, be short (< 60 chars), and not be a ToC header.
  */
@@ -722,7 +771,11 @@ export class IndexService {
       }
       const startElems = await readPage(startPage);
 
-      // Header detection is all this decision needs (design review 2026-09-05).
+      // Page identity needs BOTH markers we author (design review 2026-09-05b, item 2):
+      // the header AND the subtitle, matched on VISIBLE TEXT. See `hasOurTocIdentity` for
+      // why the header alone was not enough — `isTocElement` searches the flattened object,
+      // so a link to a note *named* "Table of Contents.note" made a page of pure handwriting
+      // look like ours.
       //
       // We used to ask "is every element on this page one of OURS?", matching each against
       // the shapes we author. That question produced two data-safety bugs in opposite
@@ -737,10 +790,10 @@ export class IndexService {
       // of what any classifier would have concluded, and unlike a conditional warning it
       // can never fail to fire.
       const startIsEmpty = startElems.length === 0;
-      const startHasToc = startElems.some((e: any) => isTocElement(e));
+      const startHasToc = hasOurTocIdentity(startElems);
 
-      // No ToC header and not blank → refuse. Consent covers replacing OUR page; it does
-      // not extend to writing over arbitrary content the user never asked us to touch.
+      // Not ours and not blank → refuse. Consent covers replacing OUR page; it does not
+      // extend to writing over arbitrary content the user never asked us to touch.
       if (!startIsEmpty && !startHasToc) {
         return { success: false, needsBlankPage: true, message: NOT_BLANK_MSG };
       }
@@ -909,9 +962,11 @@ export class IndexService {
           continue;
         }
 
-        // A continuation page of ours — it carries the same header ("(cont.)"). Header
-        // detection is the whole test now; the shape classification this used to do was
-        // retired in favour of consent (review 2026-09-05).
+        // A continuation page of ours. Header-only here, deliberately: continuation pages
+        // carry "TABLE OF CONTENTS (cont.)" but NO subtitle — it is written on the first
+        // page only (see the `c === 0` guard at the write site) — so the dual-marker test
+        // used for the start page would never match one. Dormant while pagination is
+        // descoped; ruled header-only in review 2026-09-05b.
         if (els.some((e: any) => isTocElement(e))) {
           if (startHasToc) {
             tocPagesToClear.push(p);

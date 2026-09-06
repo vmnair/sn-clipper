@@ -120,6 +120,34 @@ export class StorageService {
   }
 
   /**
+   * Have we ever created the install marker directory in the plugin's private folder?
+   *
+   * Paired with that directory to detect an uninstall. The flag lives here, in the host app's
+   * store, which survives an uninstall; the directory lives in the plugin's own folder, which
+   * does not. Flag set but directory gone therefore means "the plugin was removed and put
+   * back" — the one signal that distinguishes an uninstall from an install over the top
+   * (measured 2026-09-05: install-over-the-top leaves the folder untouched).
+   */
+  static async getInstallMarked(): Promise<boolean> {
+    try {
+      return (await AsyncStorage.getItem('clipper_install_marked')) === '1';
+    } catch (e) {
+      // Fail as "not marked": the caller then only writes the marker and never concludes a
+      // reset happened, so a storage hiccup can never trigger the destructive path.
+      console.error('Failed to read install marker flag:', e);
+      return false;
+    }
+  }
+
+  static async setInstallMarked(): Promise<void> {
+    try {
+      await AsyncStorage.setItem('clipper_install_marked', '1');
+    } catch (e) {
+      console.error('Failed to write install marker flag:', e);
+    }
+  }
+
+  /**
    * Record how many headings the last SUCCESSFUL ToC build wrote for this note.
    *
    * Deliberately separate from the ToC snapshot above, which `clearTocState` wipes as soon

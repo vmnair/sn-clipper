@@ -235,10 +235,33 @@ export default function App() {
 
   useEffect(() => {
     // Sync current list from Storage on open
-    ClipService.init().then(() => {
+    ClipService.init().then(async () => {
       setClips(ClipService.getClipsSync());
       // One-time cleanup of capture PNGs orphaned by a prior crash.
       sweepOrphanCaptures();
+
+      // Uninstalling the plugin deletes its folder, and every clip image with it, while the
+      // records survive in the host's storage. Offer to tidy up the clips that lost their
+      // images. ASKED, never automatic: the trigger is a detection heuristic, and a heuristic
+      // that can silently destroy is the bug rather than the fix (design review 2026-09-05).
+      // Declining is a real answer — the "image unavailable" card covers their display.
+      try {
+        const { reset, orphanedClipIds } = await ClipService.detectReinstall();
+        if (reset && orphanedClipIds.length > 0) {
+          const n = orphanedClipIds.length;
+          const remove = await askUserConfirmation(
+            'Stored images are missing',
+            `Clipper was uninstalled and reinstalled, which removes saved clip images. ${n} clip${n === 1 ? '' : 's'} now reference${n === 1 ? 's' : ''} a missing image. Remove ${n === 1 ? 'it' : 'them'}, or keep ${n === 1 ? 'it' : 'them'} without images?`,
+            'Remove',
+            'Keep',
+          );
+          if (remove) {
+            await ClipService.deleteClips(orphanedClipIds);
+            setClips(ClipService.getClipsSync());
+            ToastAndroid.show(`${n} clip(s) removed`, ToastAndroid.SHORT);
+          }
+        }
+      } catch (e) { /* never block startup on this */ }
     });
 
     // Load persisted settings
@@ -665,6 +688,22 @@ export default function App() {
   };
 
   const handleClearAll = async () => {
+    // Confirm first. Clear All sits permanently in the bottom bar, one tap away, and it is
+    // irreversible: `ClipService.clearClips` deletes each clip's PNG from disk as well as the
+    // records. Vinod lost a full clip list to a stray tap on 2026-09-05. Delete Selected is
+    // left unguarded on purpose — it takes a long-press and an explicit selection first, so
+    // the intent is already established.
+    const imageCount = clips.filter(clipHasImage).length;
+    const ok = await askUserConfirmation(
+      'Clear all clips?',
+      imageCount > 0
+        ? `This permanently deletes all ${clips.length} clip(s), including ${imageCount} saved image(s). It cannot be undone.`
+        : `This permanently deletes all ${clips.length} clip(s). It cannot be undone.`,
+      'Clear All',
+      'Cancel',
+    );
+    if (!ok) return;
+
     await ClipService.clearClips();
     ToastAndroid.show('Clipboard cleared!', ToastAndroid.SHORT);
     handleCancel();

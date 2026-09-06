@@ -316,7 +316,7 @@ describe('IndexService', () => {
       // Pages 0 and 1 both hold ToC; the refreshed ToC is short enough for one page.
       (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
         (p === 0 || p === 1)
-          ? { success: true, result: [{ textContentFull: 'TABLE OF CONTENTS' }] }
+          ? { success: true, result: [{ textContentFull: 'TABLE OF CONTENTS' }, { textContentFull: 'Test  ·  Generated 9/5/2026, 10:07 PM' }] }
           : { success: true, result: [] }
       ));
       (PluginFileAPI.getNoteTotalPageNum as jest.Mock).mockResolvedValue({ success: true, result: 5 });
@@ -367,7 +367,7 @@ describe('IndexService', () => {
       // stale continuation page from a previous longer ToC. The stale page must still be
       // cleared -- it carries live-looking jump links with wrong page numbers -- but
       // nothing may be written past page 1.
-      const toc = [{ textContentFull: 'TABLE OF CONTENTS' }];
+      const toc = [{ textContentFull: 'TABLE OF CONTENTS' }, { textContentFull: 'Test  ·  Generated 9/5/2026, 10:07 PM' }];
       const userPage = [{ type: 0, maxY: 500 }];
       (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => {
         if (p === 0) return { success: true, result: toc };
@@ -504,6 +504,72 @@ describe('IndexService', () => {
       expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
     });
 
+    // ---- Page identity needs BOTH markers (review 2026-09-05b, item 2) -----------------
+    it('does not offer to replace a page that merely LINKS to a note named "Table of Contents"', async () => {
+      // `isTocElement` searches JSON.stringify(elem), so this link's destPath matched the
+      // phrase even though its visible text is a single arrow -- making a page of pure
+      // handwriting look like ours and offering it up for replacement.
+      const notePath = '/sdcard/Notes/Test.note';
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0
+          ? { success: true, result: [
+              { type: 0, maxY: 900 },  // the user's handwriting
+              { showText: '↗', fullText: '↗', destPath: '/sdcard/Notes/Table of Contents.note' },
+            ] }
+          : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+      const onConfirmReplace = jest.fn().mockResolvedValue(true);
+
+      const result = await IndexService.generateTocPage(notePath, 36, undefined, undefined, undefined, onConfirmReplace);
+
+      expect(result.success).toBe(false);
+      expect(result.needsBlankPage).toBe(true);
+      expect(onConfirmReplace).not.toHaveBeenCalled();   // never even offered
+      expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
+    });
+
+    it('does not offer to replace a hand-made "Table of Contents" page', async () => {
+      // The header phrase alone is not identity: a user's own contents page has no
+      // "· Generated <date>, <time>" subtitle, and nobody reproduces a generated timestamp
+      // by accident.
+      const notePath = '/sdcard/Notes/Test.note';
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0
+          ? { success: true, result: [
+              { textContentFull: 'Table of Contents' },   // their own heading
+              { textContentFull: 'Chapter one .... 4' },  // their own hand-typed list
+            ] }
+          : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+      const onConfirmReplace = jest.fn().mockResolvedValue(true);
+
+      const result = await IndexService.generateTocPage(notePath, 36, undefined, undefined, undefined, onConfirmReplace);
+
+      expect(result.success).toBe(false);
+      expect(result.needsBlankPage).toBe(true);
+      expect(onConfirmReplace).not.toHaveBeenCalled();
+      expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when our own subtitle has been deleted', async () => {
+      // Half our identity is gone, so we can no longer prove the page is ours. Refuse and
+      // ask for a blank page rather than replace something we cannot identify.
+      const notePath = '/sdcard/Notes/Test.note';
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0 ? { success: true, result: [{ textContentFull: 'TABLE OF CONTENTS' }] } : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+      const onConfirmReplace = jest.fn().mockResolvedValue(true);
+
+      const result = await IndexService.generateTocPage(notePath, 36, undefined, undefined, undefined, onConfirmReplace);
+
+      expect(result.success).toBe(false);
+      expect(onConfirmReplace).not.toHaveBeenCalled();
+      expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
+    });
+
     it('never warns when building onto a blank page — nothing is being replaced', async () => {
       (PluginFileAPI.getElements as jest.Mock).mockImplementation(async () => ({ success: true, result: [] }));
       (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
@@ -583,7 +649,7 @@ describe('IndexService', () => {
       // Setup existing ToC header on page 0 so it enters clearToC refresh path
       (PluginFileAPI.getElements as jest.Mock).mockResolvedValue({
         success: true,
-        result: [{ textContentFull: 'TABLE OF CONTENTS' }],
+        result: [{ textContentFull: 'TABLE OF CONTENTS' }, { textContentFull: 'Test  ·  Generated 9/5/2026, 10:07 PM' }],
       });
       (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue([
         { title: 'Chapter 1', page: 2, style: 1, Y: 100, X: 50 },

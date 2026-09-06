@@ -404,6 +404,65 @@ export class ClipService {
   /**
    * Clear all aggregated text, persist empty state, and empty system clipboard.
    */
+  /**
+   * Detect that the plugin was uninstalled and reinstalled, and report which clips lost their
+   * images to it. Called once at startup; the caller decides what to do about the result.
+   *
+   * A clip is stored as two halves with different lifetimes. The PNG lives in the plugin's own
+   * folder, which the host removes when the plugin is uninstalled — correct behaviour, that
+   * folder IS the plugin. The record lives in AsyncStorage, which belongs to the host app and
+   * cannot be dropped per-plugin without destroying every other plugin's data. So an uninstall
+   * leaves records pointing at files that no longer exist (measured on device 2026-09-05).
+   *
+   * The marker is a directory rather than a file only because `FileUtils` has `makeDir` and no
+   * write. Its presence is the whole signal: it survives an install over the top and dies with
+   * an uninstall, which is exactly the distinction we need and cannot get any other way — there
+   * is no uninstall hook, and the plugin is not running when it is removed.
+   *
+   * Returns `reset: false` on every failure path. Nothing destructive may follow from a
+   * filesystem hiccup: a mechanism that can silently destroy on a bad reading is the bug, not
+   * the fix (design review 2026-09-05). The caller must also ASK before removing anything.
+   */
+  static async detectReinstall(): Promise<{ reset: boolean; orphanedClipIds: string[] }> {
+    const none = { reset: false, orphanedClipIds: [] as string[] };
+    try {
+      const { PluginManager, FileUtils } = require('sn-plugin-lib');
+      const dir = await PluginManager.getPluginDirPath();
+      if (!dir) return none;
+
+      const markerDir = `${dir}/.clipper_install_marker`;
+      const markedBefore = await StorageService.getInstallMarked();
+      const markerPresent = await FileUtils.exists(markerDir);
+
+      // Re-plant the marker whenever it is absent, so this resolves itself in one run either
+      // way: first ever launch, or the launch straight after a reinstall.
+      if (!markerPresent) {
+        try { await FileUtils.makeDir(markerDir); } catch (e) { console.warn('install marker makeDir failed:', e); }
+        await StorageService.setInstallMarked();
+      }
+
+      // Marker intact, or this is the first launch we have ever recorded → nothing happened.
+      if (markerPresent || !markedBefore) return none;
+
+      // Marked before, marker gone → the plugin folder was replaced. Report the clips whose
+      // images went with it; verify each rather than assuming, so the count we show is real.
+      await this.init();
+      const orphaned: string[] = [];
+      for (const clip of this.clips) {
+        for (const elem of clip.elements || []) {
+          if (elem.type === 'image' && elem.imagePath && !(await FileUtils.exists(elem.imagePath))) {
+            orphaned.push(clip.id);
+            break;
+          }
+        }
+      }
+      return { reset: true, orphanedClipIds: orphaned };
+    } catch (e) {
+      console.error('detectReinstall failed:', e);
+      return none;
+    }
+  }
+
   static async clearClips(): Promise<void> {
     await this.init();
 

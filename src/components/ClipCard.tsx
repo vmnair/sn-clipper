@@ -8,6 +8,45 @@ import React from 'react';
 import { StyleSheet, Text, View, Pressable, Image } from 'react-native';
 import { ClipItem } from '../services/StorageService';
 
+/**
+ * A clip's image, or an explanation when the file behind it is gone.
+ *
+ * Region clips are stored as two halves with different lifetimes: the PNG lives in the
+ * plugin's own directory, which the host removes when the plugin is uninstalled, while the
+ * record lives in AsyncStorage, which is the host app's and survives. Uninstalling therefore
+ * leaves the record pointing at a file that no longer exists (measured 2026-09-05; installing
+ * an update over the top is safe).
+ *
+ * Rendered blank, that reads as a rendering bug. Say what happened instead.
+ *
+ * Detection is `Image.onError` rather than an existence check: it costs nothing until a load
+ * actually fails, needs no filesystem call per card, and catches an unreadable or corrupt file
+ * as well as a missing one.
+ */
+function ClipImage({ path }: { path: string }) {
+  const [failed, setFailed] = React.useState(false);
+
+  if (failed) {
+    return (
+      <View style={styles.imageUnavailable} testID="clip-image-unavailable">
+        <Text style={styles.imageUnavailableTitle}>Image unavailable</Text>
+        <Text style={styles.imageUnavailableHint}>
+          The saved image is no longer on this device. Uninstalling Clipper removes stored clip
+          images; updating over the existing plugin does not.
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri: 'file://' + path }}
+      style={styles.clipImage}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 const formatDate = (timestamp?: number) => {
   if (!timestamp) return '';
   const date = new Date(timestamp);
@@ -98,10 +137,7 @@ export function ClipCard({ clip, isSelected, isSelectionMode, onPress, onLongPre
             {elem.type === 'text' && elem.text ? (
               <Text style={styles.clipText}>{elem.text}</Text>
             ) : elem.type === 'image' && elem.imagePath ? (
-              <Image
-                source={{ uri: 'file://' + elem.imagePath }}
-                style={styles.clipImage}
-              />
+              <ClipImage path={elem.imagePath} />
             ) : null}
           </View>
         );
@@ -178,6 +214,29 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: '#000000',
     lineHeight: 26,
+  },
+  imageUnavailable: {
+    width: '100%',
+    height: 180,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderStyle: 'dashed',
+    marginTop: 6,
+    backgroundColor: '#f9f9f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  imageUnavailableTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#555555',
+    marginBottom: 6,
+  },
+  imageUnavailableHint: {
+    fontSize: 13,
+    color: '#777777',
+    textAlign: 'center',
   },
   clipImage: {
     width: '100%',
