@@ -1894,6 +1894,9 @@ export default function App() {
         // then 16 headings on device (2026-09-04 §7) — and a short ToC looks perfectly
         // normal, so the loss is invisible. Ask before replacing a bigger ToC with a
         // smaller one. Same overlay dance as above: the Modal would eat the touches.
+        //
+        // Sequenced AFTER the replace confirmation below: the user agrees to lose the page
+        // first, then — if the scan also came up short — decides whether it is worth it.
         async (found: number, previous: number) => {
           setIsGeneratingToc(false);
           try {
@@ -1902,6 +1905,29 @@ export default function App() {
               `This scan found ${found} headings; the last build found ${previous}. Some titles may not have been recognised. Rebuild anyway, or keep the Table of Contents you have?`,
               'Rebuild anyway',
               'Keep existing',
+            );
+          } finally {
+            setIsGeneratingToc(true);
+          }
+        },
+        // Refreshing wipes the whole ToC page — clearPageElements replaces its contents
+        // outright rather than removing our rows selectively — so anything the user added
+        // to that page goes with it. Ask, every time (design review 2026-09-05).
+        //
+        // Unconditional on purpose. We tried deciding for the user by classifying each
+        // element as ours-or-theirs, and it failed both ways: first refusing every refresh,
+        // then silently deleting a text box reading "notes ..." because a trailing ellipsis
+        // looks like a dot leader. A dialog that always appears cannot fail to appear.
+        //
+        // Asked before the scan, so declining is instant and touches nothing.
+        async () => {
+          setIsGeneratingToc(false);
+          try {
+            return await askUserConfirmation(
+              'Replace this page?',
+              'Refreshing replaces everything on this page, including anything you added since. Continue?',
+              'Replace',
+              'Cancel',
             );
           } finally {
             setIsGeneratingToc(true);

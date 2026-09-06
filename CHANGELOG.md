@@ -5,6 +5,17 @@ Planned work lives in `design_instance/PERMISSION_UPGRADE_PLAN.md`; items move h
 
 ## [0.3.0] - 2026-08-30
 
+### 2026-09-05 — ToC refresh asks instead of guessing; shape classification removed
+Files: `src/services/IndexService.ts`, `src/App.tsx`, `README.md`, `__tests__/IndexService.test.ts`
+
+From `design_instance/REVIEW-2026-09-05.md`, after the device pass demonstrated the residual risk accepted in review 04b.
+
+- **A refresh now always asks before replacing the page.** *"Refreshing replaces everything on this page, including anything you added since. Continue?"* — asked before the scan, so declining is instant and touches nothing. This replaces the mixed-page refusal of review 2026-09-03c Q2, which was chosen when the only alternative was clearing silently; consent beats both silence and a refusal that forced the user to hand-delete their own table of contents in order to refresh it.
+- **The element shape classification is gone.** `TOC_ROW_SHAPES`, `isTocRowElement`, `elementTextCandidates` and `classifyTocPage` asked "is this element ours?", and that question produced two data-safety bugs in opposite directions: first refusing every refresh (only the header carries the phrase, so every row counted as user content), then silently **deleting** a user's typed text box reading `notes ...`, because a trailing ellipsis matches a dot leader — reproduced on device 2026-09-04. The question was wrong. `clearPageElements` wipes the whole page rather than removing our rows selectively, so what matters is not whose each element is but whether the user agreed to lose the page. Header detection is all the decision needs now.
+- **Fails closed when no confirmation callback is wired**: a caller that cannot ask cannot clear the page by omission. An unconditional dialog was chosen over a conditional one precisely because a conditional warning can fail to fire, and a guard that can silently stay quiet is the bug being closed, not the fix.
+- Building onto an occupied page that is *not* ours still refuses, unchanged and without a dialog — consent covers replacing our own page, not writing over arbitrary content.
+- 168 tests passing (three shape-classification tests retired with the code they tested; five added for the consent path, including a regression test for the `notes ...` deletion).
+
 ### 2026-09-04 — Device matrix fallout: pagination descoped, refresh guard fixed, heading loss surfaced
 Files: `src/services/IndexService.ts`, `src/services/StorageService.ts`, `src/App.tsx`, `README.md`, `__tests__/IndexService.test.ts`
 

@@ -322,7 +322,7 @@ describe('IndexService', () => {
       (PluginFileAPI.getNoteTotalPageNum as jest.Mock).mockResolvedValue({ success: true, result: 5 });
       (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(2));
 
-      await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36);
+      await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, undefined, undefined, async () => true);
 
       const clearedPages = (PluginFileAPI.replaceElements as jest.Mock).mock.calls.map((c: any) => c[1]);
       expect(clearedPages).toContain(0);
@@ -378,7 +378,7 @@ describe('IndexService', () => {
       (PluginFileAPI.getNoteTotalPageNum as jest.Mock).mockResolvedValue({ success: true, result: 5 });
       (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(60));
 
-      await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, async () => false);
+      await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, async () => false, undefined, async () => true);
 
       const cleared = (PluginFileAPI.replaceElements as jest.Mock).mock.calls.map((c: any) => c[1]);
       expect(cleared).toContain(0); // the ToC being refreshed
@@ -386,26 +386,6 @@ describe('IndexService', () => {
       expect(cleared).not.toContain(1); // never the user's page
     });
 
-    it('refuses a target page that mixes ToC rows with user content, and touches nothing', async () => {
-      // Review 2026-09-03c Q2. Previously startHasContent was false whenever a ToC was
-      // present, so the clear removed the user's elements along with our rows.
-      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
-        p === 0
-          ? { success: true, result: [{ textContentFull: 'TABLE OF CONTENTS' }, { type: 0, maxY: 900 }] }
-          : { success: true, result: [] }
-      ));
-      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
-
-      const result = await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36);
-
-      expect(result.success).toBe(false);
-      expect(result.needsBlankPage).toBe(true);
-      expect(result.message).toMatch(/also contains your own content/i);
-      // Nothing was deleted or written.
-      expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
-      expect(PluginFileAPI.deleteElements).not.toHaveBeenCalled();
-      expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
-    });
 
     // ---- 0.3.0 descope: one page, no page transition (design review 2026-09-04) --------
     it('writes ONE page and the footer instead of paginating, with the flag off', async () => {
@@ -449,7 +429,47 @@ describe('IndexService', () => {
       { textContentFull: 'Showing first 21 of 24 headings' }, // truncation footer
     ]);
 
-    it('classifies a real ToC page — header, subtitle, rows, links, footer — as ours', async () => {
+    it('warns before refreshing a ToC page, and refreshes when confirmed', async () => {
+      const notePath = '/sdcard/Notes/Test.note';
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0 ? { success: true, result: ourTocPage(notePath) } : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+      const onConfirmReplace = jest.fn().mockResolvedValue(true);
+
+      const result = await IndexService.generateTocPage(notePath, 36, undefined, undefined, undefined, onConfirmReplace);
+
+      // Asked once, and only because the page carries our header.
+      expect(onConfirmReplace).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(true);
+      expect(result.needsBlankPage).toBeUndefined();
+      expect((PluginFileAPI.replaceElements as jest.Mock).mock.calls.map((c: any) => c[1])).toContain(0);
+    });
+
+    it('declining the warning touches nothing — and does not even scan', async () => {
+      // The whole point of asking BEFORE the scan: declining is instant and free. If this
+      // ever regresses to asking after scanHeadings, a decline would still have burned the
+      // expensive recognition pass.
+      const notePath = '/sdcard/Notes/Test.note';
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0 ? { success: true, result: ourTocPage(notePath) } : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+      const onConfirmReplace = jest.fn().mockResolvedValue(false);
+
+      const result = await IndexService.generateTocPage(notePath, 36, undefined, undefined, undefined, onConfirmReplace);
+
+      expect(onConfirmReplace).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(false);
+      expect(PluginFileAPI.getTitles).not.toHaveBeenCalled();   // never scanned
+      expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
+      expect(PluginFileAPI.deleteElements).not.toHaveBeenCalled();
+      expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when no confirmation callback is wired', async () => {
+      // A caller that cannot ask must not be able to clear the page by omission. That is the
+      // same "silently stays quiet" failure the unconditional dialog exists to rule out.
       const notePath = '/sdcard/Notes/Test.note';
       (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
         p === 0 ? { success: true, result: ourTocPage(notePath) } : { success: true, result: [] }
@@ -458,49 +478,63 @@ describe('IndexService', () => {
 
       const result = await IndexService.generateTocPage(notePath, 36);
 
-      // It refreshes in place rather than refusing.
-      expect(result.success).toBe(true);
-      expect(result.needsBlankPage).toBeUndefined();
-      expect((PluginFileAPI.replaceElements as jest.Mock).mock.calls.map((c: any) => c[1])).toContain(0);
-    });
-
-    it('refuses the same page once the user adds a single handwritten stroke', async () => {
-      const notePath = '/sdcard/Notes/Test.note';
-      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
-        p === 0
-          ? { success: true, result: [...ourTocPage(notePath), { type: 0, maxY: 900 }] }
-          : { success: true, result: [] }
-      ));
-      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
-
-      const result = await IndexService.generateTocPage(notePath, 36);
-
       expect(result.success).toBe(false);
-      expect(result.needsBlankPage).toBe(true);
-      expect(result.message).toMatch(/also contains your own content/i);
       expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
-      expect(PluginFileAPI.deleteElements).not.toHaveBeenCalled();
       expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
     });
 
-    it('does not claim an arrow link that points at a different note', async () => {
-      // The ↗ shape alone is not proof of authorship; the destination has to be this note.
+    it('a typed text box on a ToC page no longer decides anything by itself', async () => {
+      // The bug this replaces: a user's text box reading `notes ...` matched the dot-leader
+      // shape, was judged to be one of our rows, and was silently deleted (device,
+      // 2026-09-04). Shape no longer decides. The page carries our header, so the user is
+      // asked -- and if they decline, their text survives.
       const notePath = '/sdcard/Notes/Test.note';
       (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
         p === 0
-          ? { success: true, result: [
-              { textContentFull: 'TABLE OF CONTENTS' },
-              { showText: '↗', fullText: '↗', destPath: '/sdcard/Notes/SomeOther.note' },
-            ] }
+          ? { success: true, result: [...ourTocPage(notePath), { textContentFull: 'notes ...' }] }
           : { success: true, result: [] }
       ));
       (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+      const onConfirmReplace = jest.fn().mockResolvedValue(false);
 
-      const result = await IndexService.generateTocPage(notePath, 36);
+      const result = await IndexService.generateTocPage(notePath, 36, undefined, undefined, undefined, onConfirmReplace);
+
+      expect(onConfirmReplace).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(false);
+      expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
+    });
+
+    it('never warns when building onto a blank page — nothing is being replaced', async () => {
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async () => ({ success: true, result: [] }));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+      const onConfirmReplace = jest.fn().mockResolvedValue(true);
+
+      const result = await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, undefined, undefined, onConfirmReplace);
+
+      expect(onConfirmReplace).not.toHaveBeenCalled();
+      expect(result.success).toBe(true);
+    });
+
+    it('still refuses to build onto a page that is occupied but not ours', async () => {
+      // Consent covers replacing OUR page. It does not extend to writing over content the
+      // user never asked us to touch, so this path is unchanged and asks nothing.
+      (PluginFileAPI.getElements as jest.Mock).mockImplementation(async (p: number) => (
+        p === 0 ? { success: true, result: [{ type: 0, maxY: 900 }] } : { success: true, result: [] }
+      ));
+      (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
+      const onConfirmReplace = jest.fn().mockResolvedValue(true);
+
+      const result = await IndexService.generateTocPage('/sdcard/Notes/Test.note', 36, undefined, undefined, undefined, onConfirmReplace);
 
       expect(result.success).toBe(false);
       expect(result.needsBlankPage).toBe(true);
+      expect(result.message).toMatch(/never overwrites your notes/i);
+      expect(onConfirmReplace).not.toHaveBeenCalled();
+      expect(PluginFileAPI.replaceElements).not.toHaveBeenCalled();
+      expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
     });
+
+
 
     // ---- §7: silent heading loss becomes a choice --------------------------------------
     it('asks before replacing a ToC when the scan finds fewer headings than the last build', async () => {
@@ -512,7 +546,7 @@ describe('IndexService', () => {
       (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(16));
       const onFewerHeadings = jest.fn().mockResolvedValue(false);
 
-      const result = await IndexService.generateTocPage(notePath, 36, undefined, undefined, onFewerHeadings);
+      const result = await IndexService.generateTocPage(notePath, 36, undefined, undefined, onFewerHeadings, async () => true);
 
       expect(onFewerHeadings).toHaveBeenCalledWith(16, 24);
       expect(result.success).toBe(false);
@@ -528,7 +562,7 @@ describe('IndexService', () => {
       (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(3));
       const onFewerHeadings = jest.fn().mockResolvedValue(true);
 
-      await IndexService.generateTocPage(notePath, 36, undefined, undefined, onFewerHeadings);
+      await IndexService.generateTocPage(notePath, 36, undefined, undefined, onFewerHeadings, async () => true);
 
       expect(onFewerHeadings).not.toHaveBeenCalled();
     });
@@ -539,7 +573,7 @@ describe('IndexService', () => {
       const notePath = '/sdcard/Notes/Test.note';
       (PluginFileAPI.getTitles as jest.Mock).mockResolvedValue(manyHeadings(60));
 
-      const result = await IndexService.generateTocPage(notePath, 36);
+      const result = await IndexService.generateTocPage(notePath, 36, undefined, undefined, undefined, async () => true);
 
       expect(result.success).toBe(true);
       expect(await StorageService.getTocLastBuild(notePath)).toMatchObject({ count: 60 });
@@ -559,7 +593,7 @@ describe('IndexService', () => {
         error: { code: 1501, message: 'Permission denied: FILE:WRITE' },
       });
 
-      const result = await IndexService.generateTocPage('/sdcard/Notes/Test.note');
+      const result = await IndexService.generateTocPage('/sdcard/Notes/Test.note', undefined, undefined, undefined, undefined, async () => true);
       expect(result.success).toBe(false);
       expect(result.error).toEqual({ code: 1501, message: 'Permission denied: FILE:WRITE' });
     });

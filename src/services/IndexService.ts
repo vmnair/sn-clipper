@@ -60,110 +60,6 @@ const TOC_PAGINATION = false;
 let tocPaginationEnabled = TOC_PAGINATION;
 
 /**
- * The shapes of the elements THIS PLUGIN writes onto a ToC page, used to decide whether a
- * page is entirely ours — safe to clear and rewrite — or holds something of the user's.
- *
- * Matching is on element SHAPE and is whole-string anchored. It is never a loose substring
- * over the stringified element: see the `isTocElement` comment for the data-loss bug that
- * rule exists to prevent. A row is recognised by the form we author (a dot leader, a
- * `p. <n>` column, an ↗ link into this same note), not by any word a user might also write.
- *
- * Why this exists: `isTocElement` matches only the header phrase, so on a real ToC page
- * every one of its ~21 rows counted as user content and the mixed-page guard refused every
- * refresh. Device matrix 2026-09-04 §5.
- */
-const TOC_ROW_SHAPES: RegExp[] = [
-  // Title row: `titleWithLeader` always ends with a space and at least 3 dot leaders.
-  /\s\.{3,}$/,
-  // Page-number column, written on its own as `p. 17`.
-  /^p\.\s*\d+$/,
-  // Truncation footer.
-  /^Showing first \d+ of \d+ headings$/,
-  // Subtitle, from `generatedSubtitle`: "{note}  ·  Generated {date}, {h:mm AM/PM}".
-  /\s·\s+Generated\s.+\d{1,2}:\d{2}\s(AM|PM)$/,
-];
-
-/** Every string this element carries that could be its visible text. */
-const elementTextCandidates = (elem: any): string[] => {
-  const out: string[] = [];
-  const push = (v: any) => {
-    if (typeof v === 'string') {
-      const t = v.trim();
-      if (t && t !== '[object Object]') out.push(t);
-    }
-  };
-  if (!elem || typeof elem !== 'object') {
-    push(elem);
-    return out;
-  }
-  // Field names vary across element kinds (text boxes vs links), so gather the known
-  // text-bearing keys at the top level and one level down rather than guessing one.
-  const KEYS = ['textContentFull', 'showText', 'fullText', 'text', 'content', 'userData'];
-  for (const k of KEYS) push(elem[k]);
-  for (const nest of ['textBox', 'textLink', 'link']) {
-    const n = elem[nest];
-    if (n && typeof n === 'object') for (const k of KEYS) push(n[k]);
-  }
-  return out;
-};
-
-/**
- * True when this element is one WE wrote as part of a ToC row (not the header, which
- * `isTocElement` covers).
- */
-const isTocRowElement = (elem: any, notePath?: string): boolean => {
-  if (!elem) return false;
-  const candidates = elementTextCandidates(elem);
-  if (candidates.length === 0) return false; // a stroke has no text: never ours
-
-  for (const txt of candidates) {
-    // The ↗ jump link. Require it to point into this same note when we can tell: an
-    // arrow linking somewhere else is not something this ToC wrote.
-    if (txt === '↗') {
-      const dest = elem.destPath || elem.textLink?.destPath || elem.link?.destPath;
-      if (!notePath || !dest || dest === notePath) return true;
-      continue;
-    }
-    if (TOC_ROW_SHAPES.some(re => re.test(txt))) return true;
-  }
-  return false;
-};
-
-export interface TocPageClass {
-  isEmpty: boolean;   // nothing on the page at all
-  hasToc: boolean;    // our TABLE OF CONTENTS header is present
-  hasForeign: boolean; // something that is neither our header nor one of our row shapes
-}
-
-/**
- * Page-level classification (design review 2026-09-04, §5 option 1).
- *
- * A page counts as OURS only when the header is present AND every other element matches a
- * row shape we author. Anything else — a handwritten stroke, the user's own text box, our
- * rows with their header deleted — makes the page unusable, and we neither clear nor write
- * it.
- *
- * RESIDUAL RISK, accepted for 0.3.0 (review 2026-09-04b, point 1): a user's own TYPED text
- * box sitting on the ToC page would be classified as ours, and so cleared on refresh, if its
- * text happens to match an anchored shape — ending in " ..." (space + three dots), or being
- * exactly `p. <n>`. It is narrow: handwriting never matches (strokes carry no text and are
- * always foreign), and the box has to be on the ToC page itself. The real fix is the 0.4.0
- * userData-marker investigation, which identifies our rows by a marker we wrote rather than
- * by their shape.
- */
-const classifyTocPage = (elems: any[], notePath?: string): TocPageClass => {
-  const list = Array.isArray(elems) ? elems : [];
-  let hasToc = false;
-  let hasForeign = false;
-  for (const e of list) {
-    if (isTocElement(e)) { hasToc = true; continue; }
-    if (isTocRowElement(e, notePath)) continue;
-    hasForeign = true;
-  }
-  return { isEmpty: list.length === 0, hasToc, hasForeign };
-};
-
-/**
  * Universal case-insensitive element checker for Table of Contents header detection.
  */
 const isTocElement = (elem: any): boolean => {
@@ -779,6 +675,13 @@ export class IndexService {
   /**
    * Build or refresh the Table of Contents.
    *
+   * `onConfirmReplace` is asked whenever the current page already carries our ToC header,
+   * because refreshing replaces the WHOLE page — `clearPageElements` wipes it rather than
+   * removing our rows selectively. It is asked BEFORE the scan, so declining costs nothing
+   * and touches nothing. Unconditional by ruling (review 2026-09-05): a warning that fires
+   * only when some heuristic thinks content was added can fail to fire, and a guard that
+   * can silently stay quiet is the bug we are closing, not the fix.
+   *
    * `onNeedPages` is asked ONCE per run, only when the headings need more pages than are
    * already available, and only for the shortfall. Returning false is a normal outcome:
    * the ToC is written as far as it fits and says so. The callback exists because the
@@ -790,6 +693,7 @@ export class IndexService {
     onPhase?: (phase: 'scanning' | 'recognizing') => void,
     onNeedPages?: (pagesNeeded: number) => Promise<boolean>,
     onFewerHeadings?: (found: number, previous: number) => Promise<boolean>,
+    onConfirmReplace?: () => Promise<boolean>,
   ): Promise<GenerateResult> {
     if (!notePath) return { success: false, message: 'No active note open' };
     try {
@@ -811,35 +715,51 @@ export class IndexService {
       // corrupts the page shown in the viewer, so the user adds a blank page themselves.
       const NOT_BLANK_MSG =
         'The Table of Contents is written on the current page and never overwrites your notes, open or add a blank page, then tap Build ToC.';
-      const MIXED_PAGE_MSG =
-        'This ToC page also contains your own content; refreshing would delete it. Move your content off this page, or delete the old ToC by hand, then try again.';
 
       const startPage = await readCurrentPage();
       if (startPage < 0) {
         return { success: false, message: 'Could not read the current page. Open the note to a blank page where the ToC should go, then tap Build.' };
       }
       const startElems = await readPage(startPage);
-      // Page-level classification, not element-by-element (design review 2026-09-04 §5).
-      // Testing each element against `isTocElement` alone judged every ToC ROW to be user
-      // content — only the header carries the phrase — so the mixed-page guard below
-      // refused every single refresh. A page is ours when the header is there and
-      // everything else matches a row shape we author.
-      //
-      // A mixed page is still refused: the clear used to remove the user's elements along
-      // with our rows, a latent data-deletion path (review 2026-09-03c Q2). Selective
-      // row-level refresh around user annotations is 0.4.0 work.
-      const startCls = classifyTocPage(startElems, notePath);
-      const startHasToc = startCls.hasToc;
-      const startIsOurs = startCls.hasToc && !startCls.hasForeign;
 
-      // Anything on this page that is not entirely our own ToC → stop immediately, before
-      // any scanning or recognition.
-      if (!startCls.isEmpty && !startIsOurs) {
-        return {
-          success: false,
-          needsBlankPage: true,
-          message: startHasToc ? MIXED_PAGE_MSG : NOT_BLANK_MSG,
-        };
+      // Header detection is all this decision needs (design review 2026-09-05).
+      //
+      // We used to ask "is every element on this page one of OURS?", matching each against
+      // the shapes we author. That question produced two data-safety bugs in opposite
+      // directions: it first refused every refresh (only the header carries the phrase, so
+      // every ToC row counted as user content), and once fixed it silently DELETED a user's
+      // typed text box reading `notes ...`, because a trailing ellipsis matches a dot
+      // leader.
+      //
+      // The question was the wrong one. `clearPageElements` wipes the WHOLE page — it does
+      // not remove our rows selectively — so what matters is not whose each element is but
+      // whether the user has agreed to lose the page. Ask them. Consent is true regardless
+      // of what any classifier would have concluded, and unlike a conditional warning it
+      // can never fail to fire.
+      const startIsEmpty = startElems.length === 0;
+      const startHasToc = startElems.some((e: any) => isTocElement(e));
+
+      // No ToC header and not blank → refuse. Consent covers replacing OUR page; it does
+      // not extend to writing over arbitrary content the user never asked us to touch.
+      if (!startIsEmpty && !startHasToc) {
+        return { success: false, needsBlankPage: true, message: NOT_BLANK_MSG };
+      }
+
+      // Refresh → always warn, before the expensive scan so declining costs nothing and
+      // touches nothing. Retires the mixed-page refusal of review 2026-09-03c Q2, which
+      // was chosen when the only alternative was clearing silently: consent beats both
+      // silence and a refusal that forces the user to hand-delete their own ToC.
+      if (startHasToc) {
+        // Fail CLOSED when no callback is wired. A caller that cannot ask must not be able
+        // to clear the page by omission — that is the same "silently stays quiet" failure
+        // the unconditional dialog exists to rule out.
+        let approved = false;
+        if (onConfirmReplace) {
+          try { approved = await onConfirmReplace(); } catch (e) { approved = false; }
+        }
+        if (!approved) {
+          return { success: false, message: 'Table of Contents left as it is.' };
+        }
       }
 
       // Page is writable (blank or an existing ToC) → now run the expensive scan.
@@ -958,7 +878,7 @@ export class IndexService {
 
       // Which following pages are reusable, and which hold an old ToC we should clear.
       // Both decided here so neither is polluted by our own writes.
-      const tocPagesToClear: number[] = startIsOurs ? [startPage] : [];
+      const tocPagesToClear: number[] = startHasToc ? [startPage] : [];
       let pagesAvailable = 1;        // the ToC page itself
       let writePlanClosed = false;   // set once user content is seen: never write past it
 
@@ -982,17 +902,18 @@ export class IndexService {
       // "wherever they sit" reads literally; see the report for the reasoning.
       for (let p = target + 1; p < totalPagesEarly; p++) {
         const els = await readPage(p);
-        const cls = classifyTocPage(els, notePath);
 
         // Blank page: reusable.
-        if (cls.isEmpty) {
+        if (els.length === 0) {
           if (!writePlanClosed && pagesAvailable < pagesNeeded) pagesAvailable++;
           continue;
         }
 
-        // Entirely our own ToC page.
-        if (cls.hasToc && !cls.hasForeign) {
-          if (startIsOurs) {
+        // A continuation page of ours — it carries the same header ("(cont.)"). Header
+        // detection is the whole test now; the shape classification this used to do was
+        // retired in favour of consent (review 2026-09-05).
+        if (els.some((e: any) => isTocElement(e))) {
+          if (startHasToc) {
             tocPagesToClear.push(p);
             if (!writePlanClosed && pagesAvailable < pagesNeeded) pagesAvailable++;
           } else {
@@ -1001,8 +922,8 @@ export class IndexService {
           continue;
         }
 
-        // The user's content, a mixed page, or ToC rows whose header is gone. Never write
-        // past here, and never clear it — but keep walking for stale ToC pages beyond.
+        // The user's content. Never write past here, and never clear it — but keep walking
+        // for stale continuation pages beyond it.
         writePlanClosed = true;
       }
 

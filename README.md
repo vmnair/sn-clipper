@@ -85,6 +85,10 @@ into a note → **settings** to tune insertion.
   turned off in this release: writing across a page break triggers a crash in the Supernote
   note app itself, which we cannot fix from a plugin. The feature returns once that firmware
   issue is resolved. Raising **Inserted text size** to Small fits more headings on the page.
+- ♻️ **Rebuilding replaces the whole page, and asks first.** Refreshing a table of contents
+  clears the page it sits on and writes it again, so anything you added to that page goes too.
+  Clipper always asks — *"Refreshing replaces everything on this page, including anything you
+  added since"* — and cancelling leaves the page exactly as it was.
 - 🔎 **If a rebuild finds fewer headings than last time**, Clipper asks before replacing what you
   have — handwriting recognition is not perfectly repeatable, and a shorter table of contents
   looks perfectly normal, so it should be your choice rather than a silent loss.
