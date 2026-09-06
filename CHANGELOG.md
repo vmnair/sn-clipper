@@ -6,9 +6,28 @@ What changed in each release, from a user's point of view.
 
 ## [0.3.0] - 2026-09-06
 
-Clip regions from your **notes**, not just documents. Inserts now flow across pages by
-themselves. Plus fixes to note capture that were quietly losing content, and clearer, safer
-behaviour around anything that deletes.
+The biggest release so far. Clip regions from your **notes**, not just documents. Inserts flow
+across pages by themselves. Tables of contents are numbered and indented. Plus fixes to note
+capture that were quietly losing content, and clearer, safer behaviour around anything that
+deletes.
+
+**At a glance**
+
+*New:* region capture in notes · Clip Region toolbar button · redesigned e-ink icons ·
+inserts continue onto the next page
+
+*Table of contents:* outline numbering and indenting · a cleaner header · one page, and it
+says so when there are more headings
+
+*Fixed:* ruled lines baked into note captures · layers missing from note captures · auto-trim
+on note clips · clips removed when the insert never landed · a split clip corrupting later
+pieces · "Always Allow" giving worse captures · silent permission failures · Jump-to-Source
+failing without explanation
+
+*Worth knowing:* rebuilding a table of contents replaces the whole page and asks first · a
+rebuild that finds fewer headings asks first · Clear All asks first · missing clip images say
+so · resuming an interrupted insert needs "Remove clips after inserting" on · **update over the
+top, do not uninstall first**
 
 ### ✨ New
 
@@ -18,13 +37,25 @@ a `.note` page, the same way you already could from a PDF or EPUB.
 **A "Clip Region" button on the toolbar.** Frame and capture a region directly, without going
 through a text selection first.
 
+**Redesigned icons.** The plugin icon and the in-app icons were redrawn for e-ink: high
+contrast, no grey fills, legible at toolbar size.
+
 **Inserts continue onto the next page.** When a batch of clips is too big for the current page,
 Clipper turns to the next existing page and carries on, instead of stopping.
 
 ### 📖 Table of contents: now with a limit made explicit
 
-The table of contents itself isn't new (it arrived in 0.1.9), but this release settles how it
-behaves when it doesn't fit.
+The table of contents itself isn't new (it arrived in 0.1.9), but this release changes how it
+looks and settles how it behaves when it doesn't fit.
+
+**Entries are now numbered and indented by level.** Clipper works out the heading levels from
+the title styles you used, then numbers them as an outline: `1.`, `1.1`, `1.2`, `2.`, and so on,
+with each level indented under its parent. A note that uses a single title style stays a flat
+numbered list, exactly as before. Numbering runs continuously down the page rather than
+restarting.
+
+**A cleaner header.** The rule under the "TABLE OF CONTENTS" heading is gone. It sat close
+enough to the first entry that the two could bleed into each other.
 
 **A table of contents is one page.** If your note has more headings than fit, Clipper writes the
 ones that fit and says so at the bottom: *"Showing first 21 of 24 headings"*. Multi-page is
@@ -44,6 +75,14 @@ headings on the page.
   after inserting" on, a failed insert could still delete the clip.
 - **A long clip split across a page break no longer corrupts the pieces after it.** In a merged
   clip, leftover text from one part could bleed into a later part.
+- **Granting broader file access no longer produced worse captures.** Setting Clipper's file
+  permission to "Always Allow" made it fall back to a lower-quality screen capture, so the
+  stricter, more convenient choice quietly gave the worse result.
+- **Jump-to-Source now explains itself when it can't open a file.** Tapping the jump icon used
+  to do nothing at all if the source had been moved or deleted. It now says so, and it also
+  tells you when a file is locked with a password instead of failing silently.
+- **Permission problems now say what is wrong.** Refused reads and writes used to fail with
+  nothing useful on screen; Clipper now tells you which access is missing and how to grant it.
 
 ### ⚠️ Things worth knowing
 

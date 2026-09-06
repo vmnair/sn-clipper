@@ -88,7 +88,8 @@ into a note → **settings** to tune insertion.
 - 🏷️ **Show source & jump in Clipper** *(default: on)*: shows/hides the source file label and the jump icon on cards.
 - 🔗 **Link source when inserting** *(default: on)*: toggles appending of back-links into notes.
 - 🔠 **Inserted text size**: **Small / Medium / Large**.
-- 📄 **Table of contents**: add a table of contents anywhere in the note, based on handwritten or text headings.
+- 📄 **Table of contents**: add a table of contents anywhere in the note, based on handwritten or text headings. Each entry gets a page number and a tappable link.
+- 🔢 **Outline numbering (New in 0.3.0)**: heading levels are worked out from the title styles you used, then numbered `1.`, `1.1`, `1.2`, `2.` and indented under their parents. A note using a single title style stays a flat numbered list.
 - 📖 **A table of contents is one page, for now.** If your note has more headings than fit on a
   single page, Clipper writes the ones that fit and says so at the bottom of the page:
   *"Showing first 21 of 24 headings"*. Multi-page tables of contents are built and tested but
